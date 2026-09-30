@@ -11,9 +11,10 @@ for Python 3.11 and later, built from the repository's `python/` directory with 
 the `gpu` feature, so a host with a CUDA device uses it the way the binary does and any other
 host runs the CPU engine.
 
-The wheel builds and passes its suite on Windows (`win_amd64`), Linux
-(`manylinux_2_34_x86_64`) and FreeBSD 15.0 (`freebsd_15_0_release_amd64`). There is no macOS
-build. `trex-re` installs from PyPI:
+PyPI carries a wheel for Windows (`win_amd64`), Linux (`manylinux_2_28_x86_64`) and macOS
+(`macosx_11_0_arm64`), each installed and its suite run when it is built. PyPI takes no
+FreeBSD wheel, so pip builds one there from the source distribution; a wheel built on FreeBSD
+15.0 passes the same suite. `trex-re` installs from PyPI:
 
 ```console
 $ pip install trex-re

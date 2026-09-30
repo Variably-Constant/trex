@@ -294,11 +294,11 @@ The PowerShell module builds with [PWRS](https://github.com/Variably-Constant/PW
 
 ## Platforms and MSRV
 
-- Rust 1.96 or later, edition 2024.
-- Built and tested on Windows 11 x64.
-- The `gpu` feature compiles `kernels/scan.cu` with `nvcc` at build time and loads it through the NVIDIA driver at run time. A machine without a device runs the same binary on the CPU.
-- Python 3.11 or later, from one stable-ABI wheel.
-- PowerShell 7 and Windows PowerShell 5.1, from one module built and tested on Windows 11 x64.
+- Rust 1.96 or later, edition 2024; the PowerShell module's crate needs 1.98.
+- The command and the library are built and tested on Windows 11 x64, and the published crate builds with or without a CUDA toolkit.
+- The `gpu` feature compiles `kernels/scan.cu` with `nvcc` at build time where `nvcc` is installed, and loads it through the NVIDIA driver at run time. A build without `nvcc`, or a machine without a device, runs on the CPU.
+- Python 3.11 or later, from stable-ABI wheels for Windows x64, Linux x64 (`manylinux_2_28`) and macOS arm64, each tested when it is built, and from the source distribution elsewhere.
+- PowerShell 7 and Windows PowerShell 5.1, from one module carrying Windows x64, Linux x64, FreeBSD x64 and macOS arm64; its Pester suites pass on each.
 
 ## Wiki
 

@@ -12,8 +12,8 @@ The engine is a PowerShell module, `Trex`, built from the repository's `powershe
 with [PWRS](https://github.com/Variably-Constant/PWRS). Its 49 cmdlets cover what the command
 line does. Each takes text from the pipeline or files by path, writes objects a pipeline can
 sort, group and select, and answers to a second name with the `Tx` prefix: `Select-TxMatch` is
-`Select-TrexMatch`. It runs in PowerShell 7 and in Windows PowerShell 5.1, and is built and
-tested on Windows 11 x64.
+`Select-TrexMatch`. It runs in PowerShell 7 on Windows x64, Linux x64, FreeBSD x64 and macOS
+arm64, and in Windows PowerShell 5.1, from one module; its Pester suites pass on each.
 
 `Trex` installs from the PowerShell Gallery:
 

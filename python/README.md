@@ -75,6 +75,8 @@ $ pip install maturin
 $ maturin build --release -m python/Cargo.toml
 ```
 
-It builds and passes its suite on Windows (`win_amd64`), Linux (`manylinux_2_34_x86_64`) and
-FreeBSD 15.0 (`freebsd_15_0_release_amd64`). There is no macOS build. A host without a CUDA
+PyPI carries a wheel for Windows (`win_amd64`), Linux (`manylinux_2_28_x86_64`) and macOS
+(`macosx_11_0_arm64`), each installed and its suite run when it is built. PyPI takes no
+FreeBSD wheel, so pip builds one there from the source distribution; a wheel built on FreeBSD
+15.0 passes the same suite. A host without a CUDA
 driver runs the CPU engine; the device is probed once and its absence is not an error.
