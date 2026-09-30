@@ -1,0 +1,576 @@
+//! The shape axis - trex's structural substrate, the dual of `spectral`.
+//!
+//! The spectral axis (`crate::spectral`) reads the TEMPORAL character of the
+//! byte stream; the shape axis reads its structural form. Two spans have the
+//! same shape when they share a silhouette - the same sequence of token-classes
+//! and word-shapes - regardless of content. `foo(a, b)` and `bar(x, y)` are the
+//! same shape `W ( W , W )`; `1,22,3` and `444,5,66` are the same shape
+//! `N , N , N`. A silhouette IS a grammar production, so a shape token is a
+//! grammar-free grammar.
+//!
+//! The load-bearing signal is the **shape period**: the spectral period
+//! (`spectral::dominant_period`) autocorrelates bytes and so finds only
+//! fixed-width structure; a ragged table (varying field widths) defeats it
+//! because the delimiter byte-offsets shift every row. Shape autocorrelates
+//! silhouettes, where width variation has already collapsed (a field is one
+//! `Number` token whatever its width), so the row period survives. Structural
+//! periodicity is invisible to every other axis.
+//!
+//! Token-grain, byte-span-keyed: every frame carries the token's byte span, so
+//! the byte / spectral / construct layers query this field by byte offset
+//! exactly as they query the spectral field. Documented in
+//! `wiki/content/docs/reference/axes/shape.md`.
+
+use crate::token::{Token, TokenKind};
+
+/// Knobs for the shape reader. `Default` suits general token input.
+#[derive(Clone, Copy, Debug)]
+pub struct ShapeConfig {
+    /// Largest token-lag the period search considers.
+    pub max_lag: usize,
+    /// Trailing token window the period autocorrelation runs over.
+    pub period_window: usize,
+    /// Recompute the period every `period_hop` tokens (held between), so total
+    /// periodicity work stays under a fixed op budget on large inputs.
+    pub period_hop: usize,
+    /// Silhouette n-gram order for novelty / change-point.
+    pub novelty_k: usize,
+    /// Sliding window (in n-grams) the novelty count map spans.
+    pub novelty_window: usize,
+    /// A shape-period run is a template when its strength clears this.
+    pub template_strength: f32,
+    /// Minimum tokens between two change-points.
+    pub cp_min_gap: usize,
+}
+
+impl Default for ShapeConfig {
+    fn default() -> Self {
+        Self {
+            max_lag: 64,
+            period_window: 256,
+            period_hop: 8,
+            novelty_k: 3,
+            novelty_window: 4096,
+            template_strength: 0.6,
+            cp_min_gap: 4,
+        }
+    }
+}
+
+/// One token's silhouette as a comparable `u32`: the `TokenKind` code in the
+/// high bits, plus - for `Word` - the [`crate::tokutil::shape`] class, and for
+/// `Punct` - the glyph byte. Two tokens with the same code are the same shape.
+#[must_use]
+pub fn shape_class(kind: TokenKind, tok_bytes: &[u8]) -> u32 {
+    let base = kind.code() << 16;
+    match kind {
+        TokenKind::Word => {
+            let s = crate::tokutil::shape(&String::from_utf8_lossy(tok_bytes));
+            base | word_shape_code(s)
+        }
+        TokenKind::Punct => base | u32::from(tok_bytes.first().copied().unwrap_or(0)),
+        _ => base,
+    }
+}
+
+/// Map a [`crate::tokutil::shape`] class string to a small code (0..6).
+fn word_shape_code(s: &str) -> u32 {
+    match s {
+        "Pascal" => 1,
+        "snake" => 2,
+        "camel" => 3,
+        "SCREAM" => 4,
+        "short" => 5,
+        _ => 0, // "word"
+    }
+}
+
+/// One token's structural reading.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ShapeFrame {
+    /// The token's [`shape_class`] code.
+    pub class: u32,
+    /// Dominant shape-period of the neighbourhood, in tokens (`0` = none).
+    pub period: u16,
+    /// Normalised silhouette-autocorrelation peak `[0,1]`.
+    pub period_strength: f32,
+    /// Shape n-gram surprise `[0,1]` (`1` = first sighting of this template).
+    pub novelty: f32,
+}
+
+/// The structural side table, keyed by byte offset (like `SpectralField`).
+#[derive(Clone, Debug, Default)]
+pub struct ShapeField {
+    /// Token count.
+    pub n_tokens: usize,
+    /// Byte span per token - the byte-offset key.
+    pub spans: Vec<(usize, usize)>,
+    /// One frame per token.
+    pub frames: Vec<ShapeFrame>,
+    /// Shape-change-point byte offsets (silhouette-break cuts), sorted.
+    pub boundaries: Vec<usize>,
+    /// The template-strength threshold this field was built with.
+    template_strength: f32,
+}
+
+impl ShapeField {
+    /// The token index covering `byte` (the last token whose span starts at or
+    /// before `byte`), or `None` if the field is empty.
+    fn token_at(&self, byte: usize) -> Option<usize> {
+        if self.spans.is_empty() {
+            return None;
+        }
+        let i = self.spans.partition_point(|&(s, _)| s <= byte);
+        Some(i.saturating_sub(1))
+    }
+
+    /// The shape-class of the token covering `byte` (`0` if empty).
+    #[must_use]
+    pub fn class_at(&self, byte: usize) -> u32 {
+        self.token_at(byte)
+            .and_then(|i| self.frames.get(i))
+            .map_or(0, |f| f.class)
+    }
+
+    /// The dominant shape-period and its strength at `byte`.
+    #[must_use]
+    pub fn period_at(&self, byte: usize) -> (u16, f32) {
+        self.token_at(byte)
+            .and_then(|i| self.frames.get(i))
+            .map_or((0, 0.0), |f| (f.period, f.period_strength))
+    }
+
+    /// Is `byte` inside a strong shape-period (template) run?
+    #[must_use]
+    pub fn in_template(&self, byte: usize) -> bool {
+        self.period_at(byte).1 >= self.template_strength
+    }
+
+    /// The periodic / template regions as byte spans plus their period: maximal
+    /// runs of tokens whose period strength clears the template threshold. The
+    /// structural map a tabular / template consumer reads.
+    #[must_use]
+    pub fn shape_regions(&self) -> Vec<(usize, usize, u16)> {
+        let mut out: Vec<(usize, usize, u16)> = Vec::new();
+        let mut run: Option<(usize, usize, u16)> = None;
+        for (i, f) in self.frames.iter().enumerate() {
+            let (s, e) = self.spans[i];
+            if f.period_strength >= self.template_strength && f.period > 0 {
+                match run.as_mut() {
+                    Some(r) => r.1 = e,
+                    None => run = Some((s, e, f.period)),
+                }
+            } else if let Some(r) = run.take() {
+                out.push(r);
+            }
+        }
+        if let Some(r) = run.take() {
+            out.push(r);
+        }
+        out
+    }
+}
+
+/// Analyse a token stream with the default configuration.
+#[must_use]
+pub fn analyze(tokens: &[Token], bytes: &[u8]) -> ShapeField {
+    analyze_with(tokens, bytes, &ShapeConfig::default())
+}
+
+/// Tokenize `bytes` (the significant-token lexer) and analyse - the convenience
+/// path for consumers that hold only bytes.
+#[must_use]
+pub fn analyze_bytes(bytes: &[u8]) -> ShapeField {
+    let toks = crate::tokutil::lex_sig(bytes);
+    analyze(&toks, bytes)
+}
+
+/// The shape-class for a token measured over a CHOSEN orbit quotient: the
+/// silhouette is the token's [`crate::orbit::canonical`] form under `group`
+/// (folded with the `TokenKind`), so two tokens that are the same UP TO the
+/// group share a class. `Identity` -> the literal token (exact-repeat
+/// structure); `Case` -> case-folded (`The` = `the`); `Notation` ->
+/// notation-folded; `Shape` -> the C/V/D phonotactic pattern. This is the shape
+/// axis reading the structure of an orbit the caller picks, instead of the
+/// built-in word-shape silhouette of [`shape_class`].
+#[must_use]
+pub fn shape_class_over(kind: TokenKind, tok_bytes: &[u8], group: crate::orbit::OrbitGroup) -> u32 {
+    let base = kind.code() << 16;
+    let canon = crate::orbit::canonical(tok_bytes, group);
+    // 16-bit FNV-1a of the canonical form: same orbit -> same low bits.
+    let mut h: u32 = 2166136261;
+    for &b in canon.as_bytes() {
+        h = (h ^ u32::from(b)).wrapping_mul(16777619);
+    }
+    base | ((h ^ (h >> 16)) & 0xFFFF)
+}
+
+/// Build the field (spans, novelty, periodicity, change-points) from a
+/// precomputed silhouette-class per token - the shared core of [`analyze_with`]
+/// (built-in word-shape silhouette) and [`analyze_over_with`] (orbit-quotient
+/// silhouette).
+fn build_field(tokens: &[Token], classes: &[u32], cfg: &ShapeConfig) -> ShapeField {
+    let n = tokens.len();
+    let mut field = ShapeField {
+        n_tokens: n,
+        spans: Vec::with_capacity(n),
+        frames: Vec::with_capacity(n),
+        boundaries: Vec::new(),
+        template_strength: cfg.template_strength,
+    };
+    if n == 0 {
+        return field;
+    }
+    for t in tokens {
+        field.spans.push((t.start(), t.end()));
+    }
+
+    // 5.3 novelty + 5.4 change-point: rolling silhouette n-gram surprise.
+    let k = cfg.novelty_k.max(1);
+    let mut counts: std::collections::HashMap<u64, u32> =
+        std::collections::HashMap::with_capacity(cfg.novelty_window.min(n) + 1);
+    // VecDeque, not Vec: the sliding window evicts from the FRONT every token, and Vec::remove(0) is
+    // an O(window) shift (O(n*window) overall). push_back / pop_front are O(1); same FIFO order.
+    let mut ring: std::collections::VecDeque<u64> = std::collections::VecDeque::with_capacity(cfg.novelty_window + 1);
+    let mut last_cut: isize = -(cfg.cp_min_gap as isize);
+
+    // 5.2 periodicity: recomputed every `period_hop` tokens, held between.
+    let mut cur_period: u16 = 0;
+    let mut cur_strength: f32 = 0.0;
+
+    let mut frames: Vec<ShapeFrame> = Vec::with_capacity(n);
+    for i in 0..n {
+        // novelty of the k-gram ending at i.
+        let novelty = if i + 1 >= k {
+            let mut h: u64 = 1469598103934665603;
+            for &c in &classes[i + 1 - k..=i] {
+                h = (h ^ u64::from(c)).wrapping_mul(1099511628211);
+            }
+            let prev = *counts.get(&h).unwrap_or(&0);
+            let entry = counts.entry(h).or_insert(0);
+            *entry += 1;
+            ring.push_back(h);
+            if ring.len() > cfg.novelty_window
+                && let Some(old) = ring.pop_front()
+                && let Some(c) = counts.get_mut(&old)
+            {
+                *c = c.saturating_sub(1);
+            }
+            1.0 / (1.0 + prev as f32)
+        } else {
+            1.0
+        };
+
+        // change-point: a novelty spike past 0.5 after the min gap is a break.
+        if novelty > 0.5 && (i as isize - last_cut) >= cfg.cp_min_gap as isize && i > 0 {
+            field.boundaries.push(tokens[i].start());
+            last_cut = i as isize;
+        }
+
+        // periodicity over a trailing silhouette window, recomputed on the hop.
+        if i % cfg.period_hop == 0 || i + 1 == n {
+            let lo = i.saturating_sub(cfg.period_window);
+            let (p, s) = dominant_shape_period(&classes[lo..=i], cfg.max_lag);
+            cur_period = p;
+            cur_strength = s;
+        }
+
+        frames.push(ShapeFrame {
+            class: classes[i],
+            period: cur_period,
+            period_strength: cur_strength,
+            novelty,
+        });
+    }
+    field.frames = frames;
+    field
+}
+
+/// The full one-pass reader over the built-in word-shape silhouette.
+#[must_use]
+pub fn analyze_with(tokens: &[Token], bytes: &[u8], cfg: &ShapeConfig) -> ShapeField {
+    // 5.1 silhouette: one shape-class per token.
+    let classes: Vec<u32> = tokens
+        .iter()
+        .map(|t| shape_class(t.kind, &bytes[t.span()]))
+        .collect();
+    build_field(tokens, &classes, cfg)
+}
+
+/// The one-pass reader over a CHOSEN orbit quotient - the composition axis. The
+/// shape axis measures period / novelty / change-points of the silhouette
+/// `group` produces: `Identity` recovers exact-token structure, `Case` folds
+/// case before measuring (the structural period of the case-folded stream),
+/// `Notation` / `Shape` fold notation / phonotactic shape. Orbit is the
+/// pre-transform; shape is the measurement that composes over it.
+#[must_use]
+pub fn analyze_over_with(
+    tokens: &[Token],
+    bytes: &[u8],
+    group: crate::orbit::OrbitGroup,
+    cfg: &ShapeConfig,
+) -> ShapeField {
+    let classes: Vec<u32> = tokens
+        .iter()
+        .map(|t| shape_class_over(t.kind, &bytes[t.span()], group))
+        .collect();
+    build_field(tokens, &classes, cfg)
+}
+
+/// [`analyze_over_with`] with the default configuration.
+#[must_use]
+pub fn analyze_over(tokens: &[Token], bytes: &[u8], group: crate::orbit::OrbitGroup) -> ShapeField {
+    analyze_over_with(tokens, bytes, group, &ShapeConfig::default())
+}
+
+/// Tokenize `bytes` and analyse over a chosen orbit quotient - the convenience
+/// path for consumers that hold only bytes.
+#[must_use]
+pub fn analyze_bytes_over(bytes: &[u8], group: crate::orbit::OrbitGroup) -> ShapeField {
+    let toks = crate::tokutil::lex_sig(bytes);
+    analyze_over(&toks, bytes, group)
+}
+
+/// Categorical autocorrelation over shape-classes: for each token-lag the
+/// fraction of positions whose class equals the class `lag` back. The dominant
+/// period is the arg-max with prominence (>= 0.5 match); equality-based because
+/// shape-classes are categorical, not numeric - that is what lets a ragged
+/// table (same silhouette, different widths) still align.
+fn dominant_shape_period(win: &[u32], max_lag: usize) -> (u16, f32) {
+    let n = win.len();
+    if n < 4 {
+        return (0, 0.0);
+    }
+    let hi = max_lag.min(n / 2);
+    let mut best_lag = 0usize;
+    let mut best = 0.0f32;
+    for lag in 1..=hi {
+        // Branchless equality count over the two overlapping slices, accumulated
+        // in u32, the lane width of the data: an indexless loop with a u32
+        // accumulator vectorizes (eight lanes per AVX2 step) where a usize one
+        // widens every element and stays scalar. The window never nears
+        // u32::MAX elements.
+        let mut matches = 0u32;
+        for (a, b) in win[lag..].iter().zip(&win[..n - lag]) {
+            matches += u32::from(a == b);
+        }
+        let matches = matches as usize;
+        let frac = matches as f32 / (n - lag) as f32;
+        if frac > best {
+            best = frac;
+            best_lag = lag;
+        }
+    }
+    if best < 0.5 {
+        (0, best)
+    } else {
+        (best_lag as u16, best)
+    }
+}
+
+/// A region's classification, fusing the spectral texture (byte-grain) with the
+/// shape period (token-grain): a region carrying a strong shape period is a
+/// `Table` (a tabular / record template) regardless of byte texture; the rest
+/// take their spectral texture. The two-axis composition - shape x spectral -
+/// that names a data table with neither a delimiter nor a grammar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegionKind {
+    /// A strong shape-period template (the `u16` is the period in tokens).
+    Table(u16),
+    /// Spectral high-entropy run (packed / base64 / encrypted).
+    Blob,
+    /// Spectral prose texture.
+    Prose,
+    /// Spectral numeric texture.
+    Numeric,
+    /// Spectral code texture, no strong period.
+    Code,
+    /// Spectral mixed texture.
+    Mixed,
+}
+
+impl RegionKind {
+    /// The kind's name, without the period a table carries.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            RegionKind::Table(_) => "table",
+            RegionKind::Blob => "blob",
+            RegionKind::Prose => "prose",
+            RegionKind::Numeric => "numeric",
+            RegionKind::Code => "code",
+            RegionKind::Mixed => "mixed",
+        }
+    }
+
+    /// Every kind's name, for a caller listing what it accepts.
+    pub const NAMES: [&'static str; 6] = ["table", "blob", "prose", "numeric", "code", "mixed"];
+
+    /// Whether this kind is the one `name` calls for.
+    ///
+    /// A table is named by `table` whatever its period, because the period is
+    /// a property of the table found and not of the kind asked for: a caller
+    /// keeping the tables cannot know their periods in advance, and one that
+    /// wants a particular period reads it off the region.
+    #[must_use]
+    pub fn named(self, name: &str) -> bool {
+        self.label() == name
+    }
+}
+
+/// Classify `input` into regions by fusing the spectral region texture with the
+/// shape period: each spectral region that overlaps a strong shape-period
+/// template becomes `Table`, the rest keep their texture. The cross-cutting
+/// consumer of the shape axis - a tabular block is named structurally, where the
+/// byte-period alone reads only "data". `shape` calls `spectral` here (token
+/// grain over byte grain), never the reverse.
+#[must_use]
+pub fn classified_regions(input: &[u8]) -> Vec<(usize, usize, RegionKind)> {
+    let templates = analyze_bytes(input).shape_regions();
+    crate::spectral::code_regions(input)
+        .into_iter()
+        .map(|(s, e, tex)| {
+            let period = templates
+                .iter()
+                .find(|&&(ts, te, _)| ts < e && te > s)
+                .map(|&(_, _, p)| p);
+            let kind = match period {
+                Some(p) => RegionKind::Table(p),
+                None => match tex {
+                    crate::spectral::CodeTexture::Blob => RegionKind::Blob,
+                    crate::spectral::CodeTexture::Prose => RegionKind::Prose,
+                    crate::spectral::CodeTexture::Numeric => RegionKind::Numeric,
+                    crate::spectral::CodeTexture::Mixed => RegionKind::Mixed,
+                    crate::spectral::CodeTexture::Code => RegionKind::Code,
+                },
+            };
+            (s, e, kind)
+        })
+        .collect()
+}
+
+/// The kind covering the most bytes of `input`, or `None` for an input with
+/// no region at all.
+///
+/// Bytes rather than region count, because a file is named by what most of it
+/// is: a source file holding one long base64 line and forty short code
+/// regions is code by count and could be a blob by bytes, and it is the bytes
+/// a reader means when they call a file one thing. A table reports the period
+/// of the widest table in it, since the period belongs to the region rather
+/// than to the file and one had to be chosen.
+#[must_use]
+pub fn dominant_kind(input: &[u8]) -> Option<RegionKind> {
+    let regions = classified_regions(input);
+    // Held by name rather than by kind, so every table counts toward one
+    // total whatever period each carries.
+    let mut totals: Vec<(&'static str, usize, RegionKind, usize)> = Vec::new();
+    for (s, e, kind) in regions {
+        let span = e.saturating_sub(s);
+        match totals.iter_mut().find(|(name, _, _, _)| *name == kind.label()) {
+            Some((_, bytes, widest, widest_span)) => {
+                *bytes += span;
+                if span > *widest_span {
+                    *widest = kind;
+                    *widest_span = span;
+                }
+            }
+            None => totals.push((kind.label(), span, kind, span)),
+        }
+    }
+    totals.into_iter().max_by_key(|&(_, bytes, _, _)| bytes).map(|(_, _, kind, _)| kind)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn field(s: &str) -> ShapeField {
+        analyze_bytes(s.as_bytes())
+    }
+
+    #[test]
+    fn ragged_csv_has_strong_shape_period() {
+        // Field widths vary, so the byte period finds nothing; the shape period
+        // (N , N , N per row) is strong.
+        let f = field("1,22,3\n444,5,66\n7,888,9\n12,3,456\n");
+        let strong = f.frames.iter().any(|fr| fr.period > 0 && fr.period_strength >= 0.6);
+        assert!(strong, "ragged CSV should show a strong shape period");
+        assert!(!f.shape_regions().is_empty(), "should report a template region");
+    }
+
+    #[test]
+    fn prose_has_no_shape_period() {
+        let f = field("the quick brown fox jumps over the lazy dog and then rests");
+        let any_template = f.frames.iter().any(|fr| fr.period_strength >= 0.8 && fr.period > 1);
+        assert!(!any_template, "free prose should not read as a strong template");
+    }
+
+    #[test]
+    fn repeated_idiom_is_low_novelty() {
+        // The repeated `self.x = x;` idiom recurs - later sightings score low.
+        let f = field("self.a = a; self.b = b; self.c = c; self.d = d;");
+        let tail: f32 = f.frames.iter().rev().take(4).map(|fr| fr.novelty).sum::<f32>() / 4.0;
+        assert!(tail < 0.6, "a repeated template should have low tail novelty, got {tail}");
+    }
+
+    #[test]
+    fn empty_is_safe() {
+        let f = field("");
+        assert_eq!(f.n_tokens, 0);
+        assert!(f.frames.is_empty());
+        assert!(f.shape_regions().is_empty());
+        assert_eq!(f.class_at(0), 0);
+        assert!(!f.in_template(0));
+    }
+
+    #[test]
+    fn class_at_maps_byte_to_silhouette() {
+        let f = field("foo(a, b)");
+        // The first token is the Word `foo`; its class is non-zero and stable.
+        assert_ne!(f.class_at(0), 0);
+        // `foo` and a same-shaped word elsewhere share a class.
+        let g = field("bar(x, y)");
+        assert_eq!(f.class_at(0), g.class_at(0), "same silhouette -> same class");
+    }
+
+    #[test]
+    fn classified_regions_names_a_table() {
+        // The fused classifier (shape x spectral) names a ragged CSV `Table`,
+        // where the byte-period alone would read only "data".
+        let csv = "name,age,score\nalice,30,95\nbob,25,88\ncarol,41,73\ndan,38,91\n";
+        let regions = classified_regions(csv.as_bytes());
+        assert!(
+            regions.iter().any(|&(_, _, k)| matches!(k, RegionKind::Table(_))),
+            "ragged CSV should classify as a Table region, got {regions:?}"
+        );
+    }
+
+    #[test]
+    fn orbit_case_fold_finds_the_true_period() {
+        // The composition axis: a case-varied repeated phrase "the cat sat". The
+        // The identity orbit sees the case-cycle (period 6); the case orbit folds
+        // case and recovers the true phrase period (3). Orbit is the
+        // pre-transform, shape the measurement that composes over it.
+        let s: &[u8] = b"the cat sat THE CAT SAT the cat sat THE CAT SAT";
+        let toks = crate::tokutil::lex_sig(s);
+        let id = analyze_over(&toks, s, crate::orbit::OrbitGroup::Identity);
+        let ca = analyze_over(&toks, s, crate::orbit::OrbitGroup::Case);
+        let id_p = id.frames.last().map_or(0, |f| f.period);
+        let ca_p = ca.frames.last().map_or(0, |f| f.period);
+        assert!(
+            ca_p > 0 && ca_p < id_p,
+            "case orbit should find a tighter period ({ca_p}) than identity ({id_p})"
+        );
+    }
+
+    #[test]
+    fn orbit_identity_matches_default_silhouette_periodicity() {
+        // Sanity: over the Identity orbit the field is well-formed and
+        // non-empty on structured input (the literal-token silhouette).
+        let s: &[u8] = b"a,1,b,2,a,1,b,2,a,1,b,2";
+        let toks = crate::tokutil::lex_sig(s);
+        let f = analyze_over(&toks, s, crate::orbit::OrbitGroup::Identity);
+        assert_eq!(f.n_tokens, toks.len());
+        assert!(f.frames.iter().any(|fr| fr.period > 0));
+    }
+}

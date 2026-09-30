@@ -1,0 +1,93 @@
+# Build the Python wheels and the source distribution, on every push to main
+# and on dispatch.
+#
+# One wheel per platform serves every interpreter from 3.11 upward, because
+# the crate targets the stable ABI. A published wheel targets a baseline CPU,
+# never the machine that built it, and trex picks its wide kernels at run
+# time: x86-64 on Linux and Windows, apple-a14 (the oldest Apple Silicon core)
+# on macOS. The Linux wheel is built in the manylinux_2_28 container so it
+# installs on any distribution with glibc 2.28 or later. FreeBSD installs from
+# the source distribution, since PyPI takes no FreeBSD wheel.
+#
+# Nothing here publishes. The wheels are left as artifacts for a release to
+# upload.
+
+name: python wheels
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  stable-abi:
+    name: stable ABI on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rustflags: "-C target-cpu=x86-64"
+            manylinux: "2_28"
+          - os: windows-latest
+            rustflags: "-C target-cpu=x86-64"
+            manylinux: "off"
+          - os: macos-latest
+            rustflags: "-C target-cpu=apple-a14"
+            manylinux: "off"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # The floor the stable ABI is taken against. A wheel built here
+          # runs on every later interpreter too.
+          python-version: "3.11"
+
+      - name: Build
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          command: build
+          args: --release --out dist
+          manylinux: ${{ matrix.manylinux }}
+          rust-toolchain: stable
+
+      - name: Check the wheel imports and its tests pass
+        shell: bash
+        working-directory: python
+        run: |
+          python -m pip install --upgrade pip pytest
+          # The distribution is trex-re; trex is what it imports as.
+          python -m pip install --no-index --find-links dist trex-re
+          python -c "import trex; print(trex.Pattern(r'\N').find('order 42').text)"
+          python -m pytest tests -q
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-abi3-${{ matrix.os }}
+          path: python/dist
+
+  source:
+    name: source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          command: sdist
+          args: --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: python/dist

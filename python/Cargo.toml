@@ -1,0 +1,28 @@
+[package]
+name = "trex-py"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "Python bindings for trex: a regex-shaped pattern language over typed tokens."
+license = "MIT"
+repository = "https://github.com/Variably-Constant/trex"
+publish = false
+
+# The extension module maturin packages as `trex` inside the `trex-re` wheel.
+# The target is named apart from the `trex` binary so the two never write the
+# same artifact name into one target directory.
+[lib]
+name = "trex_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The interpreter bindings: the stable ABI from Python 3.11, and no link
+# against a libpython, which is what lets one wheel load into any 3.11+
+# interpreter.
+pyo3 = { version = "0.29", features = ["abi3-py311", "extension-module"] }
+# The engine with its default features, as every trex crate takes it; the
+# compressor and its prior, which the bindings never read, are outside them.
+trex = { package = "trex-re", path = ".." }
+
+[lints.clippy]
+all = "warn"

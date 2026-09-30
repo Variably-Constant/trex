@@ -1,0 +1,26 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "trex-re"
+description = "trex: a regex-shaped pattern language over typed tokens, with binding, balance and typed value predicates"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Mark Newton" }]
+keywords = ["regex", "tokens", "pattern-matching", "text-search", "log-parsing"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Operating System :: OS Independent",
+]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/Variably-Constant/trex"
+Documentation = "https://variably-constant.github.io/trex/docs/reference/python/"
+
+[tool.maturin]
+module-name = "trex"
