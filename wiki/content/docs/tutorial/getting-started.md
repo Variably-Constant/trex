@@ -14,18 +14,19 @@ PowerShell.
 {{< tabs >}}
 {{< tab name="CLI" >}}
 The package on crates.io is `trex-re`; the command it installs is `trex`. It needs Rust 1.96 or
-newer.
+newer. The `trex` binary for Windows x64, Linux x64, FreeBSD x64 and macOS arm64 is also on the
+[latest release](https://github.com/Variably-Constant/trex/releases/latest).
 
 ```console
 $ cargo install trex-re
 $ trex --version
-trex 0.1.0
+trex 0.2.0
 ```
 {{< /tab >}}
 {{< tab name="Rust" >}}
 ```toml
 [dependencies]
-trex-re = "0.1.0"
+trex-re = "0.2.0"
 ```
 
 The crate is named `trex` in code.

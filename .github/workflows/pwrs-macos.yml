@@ -3,8 +3,9 @@
 # The module ships one native library per platform under runtimes/<rid>/native/.
 # This workflow builds the osx-arm64 library, runs the Pester suites against
 # it with a trex command built from the same commit, and uploads the module
-# folder for a release to fold in with `cargo pwrs merge`. It runs on every
-# push to main and on dispatch.
+# folder for a release to fold in with `cargo pwrs merge`, and the trex
+# command built under the release profile for the GitHub Release's macOS
+# arm64 binary. It runs on every push to main and on dispatch.
 
 name: pwrs macos
 
@@ -62,3 +63,14 @@ jobs:
         with:
           name: pwrs-module-osx-arm64
           path: powershell/target/pwrs/Trex
+
+      - name: Build the trex command for a release
+        run: cargo build --release --bin trex
+
+      - name: Check the release trex command runs
+        run: ./target/release/trex --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trex-osx-arm64
+          path: target/release/trex

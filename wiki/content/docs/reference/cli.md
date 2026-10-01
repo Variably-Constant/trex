@@ -12,7 +12,7 @@ Each `trex` command's synopsis and flags. The examples are on the pages the rows
 
 ```console
 $ trex --version
-trex 0.1.0
+trex 0.2.0
 ```
 
 | Concern | Behavior |

@@ -65,6 +65,8 @@ Install the command from crates.io, where the package is `trex-re`; the command 
 cargo install trex-re
 ```
 
+or download the `trex` binary for Windows x64, Linux x64, FreeBSD x64 or macOS arm64 from the [latest release](https://github.com/Variably-Constant/trex/releases/latest).
+
 A command reads files, directories, `-` for standard input, or `--text`:
 
 ```console
@@ -91,7 +93,7 @@ As a library, the package is `trex-re` and the crate it names is `trex`:
 
 ```toml
 [dependencies]
-trex-re = "0.1.0"
+trex-re = "0.2.0"
 ```
 
 The Python module installs from PyPI:

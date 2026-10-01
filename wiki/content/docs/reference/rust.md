@@ -16,7 +16,7 @@ The package on crates.io is `trex-re`, and the crate it names in code is `trex`:
 
 ```toml
 [dependencies]
-trex-re = "0.1.0"
+trex-re = "0.2.0"
 ```
 
 From a checkout: `trex = { package = "trex-re", path = "../trex" }`. The published crate leaves

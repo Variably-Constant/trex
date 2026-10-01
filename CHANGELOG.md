@@ -6,10 +6,12 @@ crates.io), the Python package (`trex-re` on PyPI) and the PowerShell module
 together. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.0] - 2026-10-01
 
 ### Added
 
+- The `trex` binary for Windows x64, Linux x64, FreeBSD x64 and macOS arm64
+  on the GitHub release.
 - A `fields` line in pattern files, which the file `trex infer` saves
   carries: a saved build read again keeps its casts, record starts, nested
   fields and accessors on every surface. `scan --fields` prints its records
