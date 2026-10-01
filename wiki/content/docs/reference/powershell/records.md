@@ -230,6 +230,24 @@ apples  42
 pears    7
 ```
 
+A built pattern is built once and applied from then on. `$built.Pattern`, which is also its
+string form, goes wherever a pattern is taken, and `$built.File` is a pattern file whose `fields`
+line keeps what the marks said beyond the pattern: each field's `[type]`, record start, accessor
+and order. Saved and imported, `ConvertFrom-TrexText '\{extract}'` writes the objects the built
+pattern writes, with no template and no build:
+
+```powershell
+PS> $built.File | Set-Content ./updates.trex
+PS> Import-TrexAtom ./updates.trex
+PS> $titles | ConvertFrom-TrexText '\{extract}'
+
+month   os version kb
+-----   -- ------- --
+2023-10 11 22H2    KB5031354
+2020-01  7         KB4534310
+        10 1607    KB4103720
+```
+
 A `[type]` casts the value as PowerShell casts it, the cast `ConvertFrom-String` makes, so a
 saved template gives the same values and .NET types: `[int]` an `Int32`, `[decimal]` a `Decimal`,
 and `[bool]` true for any text but the empty, `false` included. A template may be one text of

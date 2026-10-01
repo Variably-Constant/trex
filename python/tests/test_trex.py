@@ -444,6 +444,19 @@ def test_infer_builds_a_pattern_for_marked_and_hinted_fields(tmp_path):
         "Person": {"text": "Name: Wise Owl\nPhone: 425-888-7766", "Name": "Wise Owl", "Phone": "425-888-7766"}
     }
 
+    # A saved build is read again without building: its file carries the
+    # fields line, and a Pattern read under it gives the build's fields and
+    # reads records as the build did.
+    saved = tmp_path / "people.trex"
+    saved.write_text(people.file)
+    reused = trex.Pattern(r"\{extract}", lib=str(saved))
+    assert reused.fields == people.fields
+    assert reused.records("Name: Big Bird\nPhone: 206-555-0100\nName: Elmo Red\n") == [
+        {"lines": [0, 1], "values": {"Person": {"text": "Name: Big Bird\nPhone: 206-555-0100", "Name": "Big Bird", "Phone": "206-555-0100"}}},
+        {"lines": [2], "values": {"Person": {"text": "Name: Elmo Red", "Name": "Elmo Red", "Phone": None}}},
+    ]
+    assert [f["name"] for f in trex.Pattern(r"\W:w \N:n").fields] == ["w", "n"]
+
     # A field marked twice in a line is a list of every value it holds, and
     # `ip[*]` reads every binding joined with a comma.
     hops = trex.infer(

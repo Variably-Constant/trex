@@ -83,7 +83,7 @@ Written by [ConvertTo-TrexPattern](../records/#convertto-trexpattern).
 |---|---|---|
 | `Pattern` | string | The pattern, one branch per shape. |
 | `Format` | string | A report template writing every field, tab-separated. |
-| `File` | string | The pattern as a file -PatternFile and `trex lib` read. |
+| `File` | string | The pattern as a file -PatternFile and `trex lib` read, its `fields` line keeping each field's type, record start, accessor and order, so `\{extract}` read under it after Import-TrexAtom writes the objects this pattern writes. |
 | `Suggestions` | string[] | Each field every value of which a value class of the library holds, where no counter-example called for one, as `field: \{class} ...`; a -NotExample one of them refuses prints it in the pattern. |
 | `Declarations` | string[] | The shapes -MintShapes declared, each a line of File, `shape kb = `KB[0-9]{7}``; the pattern reads only under them, as ConvertFrom-TrexText reads it. |
 | `Fields` | [Trex.BuiltField](#trexbuiltfield)[] | The fields, in the order first marked or named. |

@@ -1865,6 +1865,40 @@ impl Pattern {
         !self.list_registers().is_empty()
     }
 
+    /// The registers bound inside each repetition, one list per repetition
+    /// in the order they open, each in first-seen order; a repetition
+    /// inside another gives its own list as well as adding to the outer's.
+    #[must_use]
+    pub fn repetition_registers(&self) -> Vec<Vec<String>> {
+        let mut out = Vec::new();
+        self.collect_repetition_registers(&mut out);
+        out
+    }
+
+    fn collect_repetition_registers(&self, out: &mut Vec<Vec<String>>) {
+        let repetition = |p: &Pattern, out: &mut Vec<Vec<String>>| {
+            out.push(p.capture_names());
+            p.collect_repetition_registers(out);
+        };
+        match self {
+            Pattern::Star(p, _) | Pattern::Plus(p, _) => repetition(p, out),
+            Pattern::Repeat(p, _, hi, _) if *hi != Some(1) => repetition(p, out),
+            Pattern::Bind(_, _, p)
+            | Pattern::Repeat(p, _, _, _)
+            | Pattern::Opt(p, _)
+            | Pattern::Balanced(_, p)
+            | Pattern::Field(_, p)
+            | Pattern::Atomic(p)
+            | Pattern::Assert(p, _, _) => p.collect_repetition_registers(out),
+            Pattern::Concat(v) | Pattern::Alt(v, _) => {
+                for p in v {
+                    p.collect_repetition_registers(out);
+                }
+            }
+            Pattern::Within(..) | Pattern::Empty | Pattern::Atom(_) | Pattern::Guard(..) | Pattern::Anchor(_) => {}
+        }
+    }
+
     fn collect_list_registers(&self, repeated: bool, out: &mut Vec<String>) {
         match self {
             Pattern::Bind(name, _, p) => {

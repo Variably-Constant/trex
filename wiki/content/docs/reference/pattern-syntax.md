@@ -772,6 +772,20 @@ declares it, so a test may stand above the line it checks. `trex lib --test FILE
 prints each expectation not met as a `FILE:LINE:` line; the [command reference](../cli/#lib)
 shows a run.
 
+A `fields NAME {mark}...` line, below the `let` declaring `NAME`, gives that sub-pattern's fields
+in order, each written as a `ConvertFrom-String` mark with the example text left out:
+`{[int]os}` casts the field to the type it names, `{Name*}` begins a record, `{Person.Name}` is a
+field inside another, and `{host:host}` reads the field through an accessor, as `${host:host}`
+does in a template. A field the sub-pattern binds no register under, a field named twice, an
+accessor that is not one and a `[type]` no mark knows are refused. `trex infer --lib-file` writes
+the line for the pattern it builds, and `scan --fields`, Python's `Pattern.records` and
+PowerShell's `ConvertFrom-TrexText` read `\{NAME}` through it as the build read its lines.
+
+```text
+let extract = ^ "GET" (\U):host (\N):code ~<($ .)
+fields extract {host:host} {[int]code}
+```
+
 A **rule** is a named pattern with what a finding of it says. As a block:
 
 ```text

@@ -321,9 +321,27 @@ impl Built {
         self.fields.iter().map(|f| f.template.as_str()).collect::<Vec<_>>().join("\\t")
     }
 
+    /// Each field as a `fields` line writes it: its mark with the example
+    /// text left out, `{[int]os}`, `{Name*}`, `{host:host}`.
+    #[must_use]
+    pub fn field_marks(&self) -> Vec<crate::infer::marks::FieldMark> {
+        self.fields
+            .iter()
+            .map(|f| crate::infer::marks::FieldMark {
+                name: f.name.clone(),
+                hint: f.hint,
+                type_name: f.type_name.clone(),
+                starts_record: f.starts_record,
+                accessor: f.accessor.clone(),
+            })
+            .collect()
+    }
+
     /// The pattern as a pattern file: the shapes it declares, a `let` per
-    /// shape of the lines, one naming them in order, and a test accepting
-    /// the first line of each shape and rejecting each counter-example.
+    /// shape of the lines, one naming them in order, the `fields` line
+    /// giving that one its fields as the marks said them, and a test
+    /// accepting the first line of each shape and rejecting each
+    /// counter-example.
     #[must_use]
     pub fn file(&self) -> String {
         let counted = |n: usize, one: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") };
@@ -342,6 +360,8 @@ impl Built {
         }
         let parts: Vec<String> = (1..=self.shapes.len()).map(|i| format!("\\{{{}_{i}}}", self.name)).collect();
         out.push_str(&format!("let {} = {}\n", self.name, parts.join(joiner(self.unanchored))));
+        let marks: Vec<String> = self.field_marks().iter().map(crate::infer::marks::FieldMark::written).collect();
+        out.push_str(&format!("fields {} {}\n", self.name, marks.join(" ")));
         let accepts: Vec<String> =
             self.shapes.iter().filter_map(|s| s.lines.first()).map(|&r| quoted(&self.rows[r].text)).collect();
         out.push_str(&format!("test {} accepts {}", self.name, accepts.join(" ")));
@@ -945,34 +965,70 @@ fn carry_into_marked(lines: &[Line], groups: &[Group], places: &[Placed], given:
 type Parts = Vec<Vec<Values>>;
 
 /// The records `rows`, a sequence of indexes into `built.rows`, hold, read
-/// as `ConvertFrom-String` reads them from each row's `parts`: a part
-/// holding a field that begins a record begins one, a part after it joins
-/// it as [`join_record`] joins one, and a part before the first begins
-/// none. A line with no token belongs to no record.
-/// Where no field begins a record, each line with a shape is one.
+/// from each row's `parts` as [`records_from`] reads them. A line with no
+/// shape belongs to no record.
 fn records_of(built: &Built, rows: &[usize], parts: &Parts) -> Vec<Record> {
-    let starters: Vec<usize> = (0..built.fields.len()).filter(|&f| built.fields[f].starts_record).collect();
+    let shaped = rows.iter().filter(|&&r| built.rows[r].shape.is_some());
+    records_from(&built.fields, shaped.flat_map(|&r| parts[r].iter().map(move |part| (r, part))))
+}
+
+/// The records a sequence of parts holds, each part a line and one record's
+/// values in it as [`record_parts`] cuts a match's, read as
+/// `ConvertFrom-String` reads records: a part holding a field that begins a
+/// record begins one, a part after it joins it as [`join_record`] joins
+/// one, and a part before the first begins none. Where no field begins a
+/// record, each part is one.
+pub fn records_from<'a>(fields: &[Field], parts: impl IntoIterator<Item = (usize, &'a Values)>) -> Vec<Record> {
+    let starters: Vec<usize> = (0..fields.len()).filter(|&f| fields[f].starts_record).collect();
     let mut records: Vec<Record> = Vec::new();
     let mut open = false;
-    for &r in rows {
-        if built.rows[r].shape.is_none() {
-            continue;
-        }
-        for part in &parts[r] {
-            let begins = starters.is_empty() || starters.iter().any(|&f| part[f].is_some());
-            if begins {
-                records.push(Record { lines: vec![r], values: part.clone() });
-                open = true;
-            } else if open {
-                let record = records.last_mut().expect("an open record is the last");
-                if record.lines.last() != Some(&r) {
-                    record.lines.push(r);
-                }
-                join_record(&built.fields, &mut record.values, part);
+    for (line, part) in parts {
+        let begins = starters.is_empty() || starters.iter().any(|&f| part[f].is_some());
+        if begins {
+            records.push(Record { lines: vec![line], values: part.clone() });
+            open = true;
+        } else if open {
+            let record = records.last_mut().expect("an open record is the last");
+            if record.lines.last() != Some(&line) {
+                record.lines.push(line);
             }
+            join_record(fields, &mut record.values, part);
         }
     }
     records
+}
+
+/// The records `fields` read from `input` through `pattern` lexed under
+/// `shapes`: each match's values cut into the records it holds as
+/// [`record_parts`] cuts them, on the line the match starts on, counted from
+/// zero, and those parts made into records as [`records_from`] makes them.
+///
+/// # Errors
+///
+/// A field reads through an accessor that is not one.
+pub fn read_records(
+    fields: &[Field],
+    pattern: &crate::ast::Pattern,
+    shapes: &ShapeSet,
+    input: &str,
+) -> Result<Vec<Record>, String> {
+    let bytes = input.as_bytes();
+    let spans = crate::engine::scan_with_shapes(pattern, bytes, shapes);
+    let matches = if shapes.is_empty() {
+        crate::engine::captures_with_lists(pattern, bytes, &spans)
+    } else {
+        crate::engine::captures_with_shapes_and_lists(pattern, bytes, shapes, &spans)
+    };
+    let mut parts: Vec<(usize, Values)> = Vec::new();
+    let (mut line, mut counted) = (0, 0);
+    for m in &matches {
+        line += bytes[counted..m.start].iter().filter(|&&b| b == b'\n').count();
+        counted = m.start;
+        for part in record_parts(fields, m, input)? {
+            parts.push((line, part));
+        }
+    }
+    Ok(records_from(fields, parts.iter().map(|(line, part)| (*line, part))))
 }
 
 /// Join `part`, a later line's values, to the open `record`, as
@@ -2780,6 +2836,93 @@ fn finish(
     Ok((built, parts))
 }
 
+/// How a `--format` template writes field `name` of a pattern binding
+/// `bound`: by its position where a report template reads its name as a
+/// field of the report, `[*]` after it for a field holding every binding,
+/// and its accessor after a colon.
+fn template_for(name: &str, bound: &[String], every: bool, accessor: Option<&str>) -> String {
+    let reference = match bound.iter().position(|b| b == name) {
+        Some(i) if crate::rewrite::is_report_field(name) => (i + 1).to_string(),
+        _ => name.to_string(),
+    };
+    let every = if every { "[*]" } else { "" };
+    match accessor {
+        Some(accessor) => format!("${{{reference}{every}:{accessor}}}"),
+        None => format!("${{{reference}{every}}}"),
+    }
+}
+
+/// The fields a `fields` line gives `pattern`, as the builder made them:
+/// each mark's name, type, record start and accessor, in order. A field
+/// bound inside a repetition that also binds a field beginning a record
+/// stands in records a line repeats; any other bound under a repetition is
+/// a list. Each field's parent is the one its name, up to its last dot,
+/// names.
+#[must_use]
+pub fn fields_from_marks(marks: &[crate::infer::marks::FieldMark], pattern: &crate::ast::Pattern) -> Vec<Field> {
+    let bound = pattern.capture_names();
+    let lists = pattern.list_registers();
+    let starters: Vec<&str> = marks.iter().filter(|m| m.starts_record).map(|m| m.name.as_str()).collect();
+    let records: Vec<String> = pattern
+        .repetition_registers()
+        .into_iter()
+        .filter(|names| names.iter().any(|n| starters.contains(&n.as_str())))
+        .flatten()
+        .collect();
+    marks
+        .iter()
+        .map(|m| {
+            let repeats = records.contains(&m.name);
+            let list = !repeats && lists.contains(&m.name);
+            Field {
+                name: m.name.clone(),
+                accessor: m.accessor.clone(),
+                hint: m.hint,
+                type_name: m.type_name.clone(),
+                starts_record: m.starts_record,
+                list,
+                repeats,
+                parent: m.name.rsplit_once('.').and_then(|(outer, _)| marks.iter().position(|o| o.name == outer)),
+                template: template_for(&m.name, &bound, list || repeats, m.accessor.as_deref()),
+            }
+        })
+        .collect()
+}
+
+/// The fields a pattern reads where it is applied again: where `source`,
+/// the pattern as written and parsed under `shapes` into `pattern`, is one
+/// reference `\{name}` to a sub-pattern a `fields` line gives its fields,
+/// those, as [`fields_from_marks`] reads them; otherwise one field per
+/// register, in written order, a list where it is bound under a
+/// repetition.
+#[must_use]
+pub fn fields_for(source: &str, pattern: &crate::ast::Pattern, shapes: &ShapeSet) -> Vec<Field> {
+    let saved = source
+        .trim()
+        .strip_prefix("\\{")
+        .and_then(|s| s.strip_suffix('}'))
+        .and_then(|name| Some((shapes.fields_of(name)?, shapes.let_of(name)?)));
+    if let Some((marks, named)) = saved {
+        return fields_from_marks(marks, named);
+    }
+    let lists = pattern.list_registers();
+    pattern
+        .capture_names()
+        .into_iter()
+        .map(|name| Field {
+            list: lists.contains(&name),
+            template: format!("${{{name}}}"),
+            name,
+            accessor: None,
+            hint: None,
+            type_name: None,
+            starts_record: false,
+            repeats: false,
+            parent: None,
+        })
+        .collect()
+}
+
 /// The fields as the report gives them: the accessor a part field is read
 /// with, which every shape reading it as a part shares, and the template
 /// writing each, by position where a report template reads its name as a
@@ -2824,15 +2967,7 @@ fn fields_built(
             },
             _ => None,
         };
-        let reference = match bound.iter().position(|b| b == name) {
-            Some(i) if crate::rewrite::is_report_field(name) => (i + 1).to_string(),
-            _ => name.clone(),
-        };
-        let every = if list || repeats { "[*]" } else { "" };
-        let template = match &accessor {
-            Some(accessor) => format!("${{{reference}{every}:{accessor}}}"),
-            None => format!("${{{reference}{every}}}"),
-        };
+        let template = template_for(name, &bound, list || repeats, accessor.as_deref());
         let said = &given[f];
         fields.push(Field {
             name: name.clone(),
@@ -3382,5 +3517,90 @@ mod tests {
         assert_eq!(built.fields[0].template, "${1}");
         assert_eq!(built.fields[1].template, "${2}");
         assert_eq!(column(&built, "path"), some(&[Some("src/main.rs"), Some("lib.rs")]));
+    }
+
+    /// A pattern built from a template of several lines and `lines`.
+    fn build_template(template: &str, lines: &[&str]) -> Built {
+        let marked = crate::infer::marks::parse_lines(template).expect("the template reads");
+        let lines = strings(lines);
+        let shapes = ShapeSet::new();
+        let spec = Spec {
+            lines: &lines,
+            marked: &marked,
+            hints: &[],
+            counters: &[],
+            shapes: &shapes,
+            unanchored: false,
+            mint: Mint::default(),
+        };
+        build(&spec).expect("a pattern is built")
+    }
+
+    /// The pattern file `built` writes, read back: the set it declares, and
+    /// the fields its `fields` line gives `extract`.
+    fn read_file(built: &Built) -> (ShapeSet, Vec<Field>) {
+        let mut set = ShapeSet::new();
+        set.declare_text(&built.file()).expect("the file reads");
+        let marks = set.fields_of("extract").expect("the file gives extract its fields").to_vec();
+        let fields = fields_from_marks(&marks, set.let_of("extract").expect("the file declares extract"));
+        (set, fields)
+    }
+
+    #[test]
+    fn a_built_patterns_file_gives_back_every_field_as_the_build_made_it() {
+        let builds = [
+            build_from(&["{month:2023-10} Cumulative Update for Windows {[int]os:11} Version {version:22H2} for x64-based Systems ({kb:KB5031354})"], &TITLES, &[], &[]).expect("titles"),
+            build_minted(&["{month:2023-10} Cumulative Update for Windows {os:11} Version {version:22H2} for x64-based Systems ({kb:KB5031354})"], &TITLES, &[], &[], Mint::Shapes).expect("declared shapes"),
+            build_from(&["from {ip:10.0.0.1} -> {ip:10.0.0.2} ok"], &["from 10.0.0.7 -> 10.0.0.8 -> 10.0.0.9 ok", "from 10.0.0.3 ok"], &[], &[]).expect("a list"),
+            build_from(&["day {day:Mon}: {Name*:Phoebe Cat} ({[int]age:6}); {Name*:Lucky Shot} ({[int]age:12}) end"], &["day Tue: Wise Owl (87) end"], &[], &[]).expect("repeating records"),
+            build_from(&["{Line:{[int]n:1} of {[int]m:3}}"], &["5 of 9", "6 of 9"], &[], &[]).expect("nested marks"),
+            build_from(&["GET https://{host:example.com}/a {[int]code:200}"], &["GET https://trex.dev/b 404"], &[], &[]).expect("an accessor"),
+            build_from(&["at {line:42} in {path:src/main.rs}"], &["at 7 in lib.rs"], &[], &[]).expect("report names"),
+            build_template("{Person*:Name: {Name:Phoebe Cat}\nPhone: {Phone:425-123-6789}}", &["Name: Wise Owl", "Phone: 425-888-7766"]),
+        ];
+        for built in &builds {
+            assert!(built.file().contains("\nfields extract {"), "{}", built.file());
+            assert_eq!(read_file(built).1, built.fields, "{}", built.file());
+        }
+    }
+
+    #[test]
+    fn a_saved_build_reads_the_records_the_build_did() {
+        let template = "{Person*:Name: {Name:Phoebe Cat}\nPhone: {Phone:425-123-6789}}";
+        let built = build_template(template, &["Name: Wise Owl", "Phone: 425-888-7766", "Name: Big Bird", "Phone: 206-555-0100"]);
+        let (set, fields) = read_file(&built);
+        let pattern = set.let_of("extract").expect("the file declares extract");
+        let text = "Name: Wise Owl\nPhone: 425-888-7766\nName: Big Bird\nPhone: 206-555-0100\n";
+        let read = read_records(&fields, pattern, &set, text).expect("the fields read");
+        let built_values: Vec<&Values> = built.records[1..].iter().map(|r| &r.values).collect();
+        let read_values: Vec<&Values> = read.iter().map(|r| &r.values).collect();
+        assert_eq!(read_values, built_values);
+        assert_eq!(read.iter().map(|r| r.lines.clone()).collect::<Vec<_>>(), [vec![0, 1], vec![2, 3]]);
+        let people = build_from(&["day {day:Mon}: {Name*:Phoebe Cat} ({[int]age:6}); {Name*:Lucky Shot} ({[int]age:12}) end"], &["day Tue: Wise Owl (87) end"], &[], &[]).expect("repeating records");
+        let (set, fields) = read_file(&people);
+        let read = read_records(&fields, set.let_of("extract").expect("extract"), &set, "day Wed: Elmo Red (3); Oscar Grouch (9) end\n").expect("the fields read");
+        let names: Vec<Option<String>> = read.iter().map(|r| r.values[1].as_ref().map(Value::joined)).collect();
+        assert_eq!(names, some(&[Some("Elmo Red"), Some("Oscar Grouch")]));
+        assert!(read.iter().all(|r| r.values[0] == Some(Value::One("Wed".to_string()))));
+    }
+
+    #[test]
+    fn a_fields_line_names_only_what_its_pattern_binds() {
+        let base = "let p = (\\N):n (\\U):u\n";
+        let refused = |line: &str| {
+            let mut set = ShapeSet::new();
+            set.declare_text(&format!("{base}{line}\n")).expect_err(line).msg
+        };
+        assert!(refused("fields q {n}").contains("no sub-pattern is declared as q"));
+        assert!(refused("fields p {m}").contains("{m}"));
+        assert!(refused("fields p {n} {n}").contains("named twice"));
+        assert!(refused("fields p {[widget]n}").contains("[widget]"));
+        assert!(refused("fields p {u:nosuch}").contains("{u:nosuch}"));
+        assert!(refused("fields p n").contains("holds marks"));
+        assert!(refused("fields p {n}\nfields p {u}").contains("has a fields line already"));
+        let mut set = ShapeSet::new();
+        set.declare_text(&format!("{base}fields p {{[int]n}} {{u:host}}\n")).expect("the line reads");
+        let marks = set.fields_of("p").expect("p has fields");
+        assert_eq!(marks.iter().map(crate::infer::marks::FieldMark::written).collect::<Vec<_>>(), ["{[int]n}", "{u:host}"]);
     }
 }

@@ -255,6 +255,21 @@ with a newline.
 '1.1.1.1,2.2.2.2'
 ```
 
+A built pattern is built once and applied from then on without `infer`. `file`, saved, holds
+the pattern and a `fields` line keeping each field's type, record start, accessor and order;
+`Pattern(r"\{extract}", lib=path)` read under it has the build's `fields`, and `records(text)`
+returns the records of `text` as `Built.records` gives them, each with the `lines` it stands on
+counted from zero. A pattern with no `fields` line has one field per register.
+
+```python
+>>> pets = trex.infer(["Name: Wise Owl", "Phone: 425-888-7766"],
+...                   marked=["Name: {Name*:Phoebe Cat}\nPhone: {phone:425-123-6789}"])
+>>> with open("pets.trex", "w") as f:
+...     _ = f.write(pets.file)
+>>> trex.Pattern(r"\{extract}", lib="pets.trex").records("Name: Big Bird\nPhone: 206-555-0100\nName: Elmo Red\n")
+[{'lines': [0, 1], 'values': {'Name': 'Big Bird', 'phone': '206-555-0100'}}, {'lines': [2], 'values': {'Name': 'Elmo Red', 'phone': None}}]
+```
+
 `Pattern.count_by(key, text, order="key")` returns the rows `count-by` prints, and
 `order="count"` the rows `top` prints. Every row is returned: a truncated table and a
 complete one read alike, so the cut is the caller's to make.

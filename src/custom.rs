@@ -298,6 +298,10 @@ pub struct ShapeSet {
     tests: Vec<LibTest>,
     /// The `rule` declarations, in declaration order.
     rules: Vec<Rule>,
+    /// The fields a `fields` line gives a named sub-pattern, by its name:
+    /// what the marks a pattern was built from said of each field beyond
+    /// the pattern, in the order the fields are written.
+    fields: Vec<(String, Vec<crate::infer::marks::FieldMark>)>,
     /// The ids handed to declared shapes and kinds so far; the shipped
     /// library's start at [`LIBRARY_ID_BASE`] and are placed by their entry.
     next_id: u8,
@@ -483,6 +487,51 @@ impl ShapeSet {
     #[must_use]
     pub fn let_of(&self, name: &str) -> Option<&Pattern> {
         self.lets.iter().rev().find(|(n, _)| n == name).map(|(_, p)| p)
+    }
+
+    /// The fields a `fields` line gives the sub-pattern `name`, in order.
+    #[must_use]
+    pub fn fields_of(&self, name: &str) -> Option<&[crate::infer::marks::FieldMark]> {
+        self.fields.iter().find(|(n, _)| n == name).map(|(_, f)| f.as_slice())
+    }
+
+    /// Record a `fields` line, `NAME {mark}...`: the fields of the
+    /// sub-pattern declared as `NAME` before it, in order, each a mark with
+    /// the example text left out, as [`crate::infer::marks::field_marks`]
+    /// reads them.
+    ///
+    /// # Errors
+    ///
+    /// A name no sub-pattern is declared under, a second `fields` line for
+    /// one, a line naming no field, a mark that does not read, a field named
+    /// twice, and a field the sub-pattern binds no register under or reads
+    /// through an accessor that is not one.
+    pub fn declare_fields(&mut self, decl: &str) -> Result<(), ShapeError> {
+        let err = |msg: String| ShapeError { decl: decl.to_string(), msg };
+        let (name, rest) = decl.split_once(char::is_whitespace).unwrap_or((decl, ""));
+        let pattern = self
+            .let_of(name)
+            .ok_or_else(|| err(format!("no sub-pattern is declared as {name} above; a fields line follows its let")))?;
+        if self.fields_of(name).is_some() {
+            return Err(err(format!("{name} has a fields line already")));
+        }
+        let marks = crate::infer::marks::field_marks(rest).map_err(|e| err(e.to_string()))?;
+        if marks.is_empty() {
+            return Err(err("a fields line names at least one field".to_string()));
+        }
+        let bound = pattern.capture_names();
+        for (k, mark) in marks.iter().enumerate() {
+            if marks[..k].iter().any(|m| m.name == mark.name) {
+                return Err(err(format!("{} is named twice", mark.written())));
+            }
+            let body = match &mark.accessor {
+                Some(accessor) => format!("{}:{accessor}", mark.name),
+                None => mark.name.clone(),
+            };
+            crate::rewrite::Reference::parse(&body, &bound).map_err(|e| err(format!("{}: {}", mark.written(), e.msg)))?;
+        }
+        self.fields.push((name.to_string(), marks));
+        Ok(())
     }
 
     /// Whether a declaration here can take `name` without shadowing any
@@ -818,7 +867,8 @@ impl ShapeSet {
     /// fields as `fix NAME = TEMPLATE`, `meta NAME KEY = VALUE`, `files NAME
     /// = GLOBS`, `unless NAME = PATTERN`, `record NAME = UNIT`, `record-start
     /// NAME = PATTERN` and `record-span NAME = PATTERN` lines below it. Blank
-    /// lines and lines opening with `#` are skipped.
+    /// lines and lines opening with `#` are skipped. A `fields` line gives a
+    /// sub-pattern's fields, as [`Self::declare_fields`] reads it.
     ///
     /// # Errors
     ///
@@ -879,6 +929,7 @@ impl ShapeSet {
                     self.declare(rest, Precedence::After).map_err(at)?;
                 }
                 "test" => self.declare_test(rest, n).map_err(at)?,
+                "fields" => self.declare_fields(rest).map_err(at)?,
                 "rule" => {
                     let is_block = !rest.is_empty() && rest.chars().all(|c| c == '_' || c.is_ascii_alphanumeric());
                     let rule = if is_block {

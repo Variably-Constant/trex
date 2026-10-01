@@ -213,6 +213,128 @@ fn column(src: &str, at: usize) -> usize {
     src[..at].chars().count() + 1
 }
 
+/// One field of a built pattern as a `fields` line of a pattern file writes
+/// it: a mark with the example text left out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldMark {
+    /// The field's name; a field inside another is named after it, a dot,
+    /// and its own name, as trex names a capture inside a capture.
+    pub name: String,
+    /// The type a `{[type]name}` mark names.
+    pub hint: Option<Hint>,
+    /// The type's name as the mark writes it, which is what a value is cast
+    /// to.
+    pub type_name: Option<String>,
+    /// `{name*}`: the field begins a record.
+    pub starts_record: bool,
+    /// `{name:accessor}`: the field reads its register through this
+    /// accessor, as `${name:accessor}` does in a template.
+    pub accessor: Option<String>,
+}
+
+impl FieldMark {
+    /// The mark a `fields` line writes for the field.
+    #[must_use]
+    pub fn written(&self) -> String {
+        let mut out = String::from("{");
+        if let Some(t) = &self.type_name {
+            out.push('[');
+            out.push_str(t);
+            out.push(']');
+        }
+        out.push_str(&self.name);
+        if self.starts_record {
+            out.push('*');
+        }
+        if let Some(a) = &self.accessor {
+            out.push(':');
+            out.push_str(a);
+        }
+        out.push('}');
+        out
+    }
+}
+
+/// Read the fields of a `fields` line: marks with the example text left
+/// out, `{[type]name*:accessor}`, each part but the name optional, separated
+/// by whitespace. A name is alphanumerics and underscores, dots joining a
+/// field inside another to it; an accessor runs to the `}`.
+///
+/// # Errors
+///
+/// Anything between the marks, a mark never closed, a mark with no name or
+/// an empty accessor, and a `[type]` naming no type a mark knows, each with
+/// the column it stands at.
+pub fn field_marks(src: &str) -> Result<Vec<FieldMark>, MarkError> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    let bytes = src.as_bytes();
+    while i < bytes.len() {
+        if bytes[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        let err = |at: usize, msg: String| MarkError { col: column(src, at), msg };
+        if bytes[i] != b'{' {
+            return Err(err(i, "a fields line holds marks, {name}, {[type]name}, {name*} or {name:accessor}".to_string()));
+        }
+        let open = i;
+        let Some(close) = src[open..].find('}').map(|c| open + c) else {
+            return Err(err(open, "the mark is never closed with a }".to_string()));
+        };
+        let body = &src[open + 1..close];
+        let (typed, rest) = match body.strip_prefix('[') {
+            Some(after) => {
+                let Some((name, rest)) = after.split_once(']') else {
+                    return Err(err(open, "the [type] is never closed with a ]".to_string()));
+                };
+                match Hint::parse(name) {
+                    Some(h) => (Some((h, name.to_string())), rest),
+                    None => {
+                        return Err(err(
+                            open,
+                            format!(
+                                "[{name}] names no type a mark knows; write one of int, long, double, decimal, bool, \
+                                 char, string, datetime, timespan, guid, version, ipaddress, mailaddress or uri"
+                            ),
+                        ));
+                    }
+                }
+            }
+            None => (None, body),
+        };
+        let (head, accessor) = match rest.split_once(':') {
+            Some((head, accessor)) => (head, Some(accessor.trim().to_string())),
+            None => (rest, None),
+        };
+        let (name, starts_record) = match head.strip_suffix('*') {
+            Some(name) => (name, true),
+            None => (head, false),
+        };
+        let named = !name.is_empty()
+            && name.split('.').all(|part| {
+                part.starts_with(|c: char| c == '_' || c.is_ascii_alphabetic())
+                    && part.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
+            });
+        if !named {
+            return Err(err(
+                open,
+                format!("{{{body}}} names no field; a name is alphanumerics and underscores, dots joining a field inside another"),
+            ));
+        }
+        if accessor.as_deref().is_some_and(str::is_empty) {
+            return Err(err(open, format!("{{{body}}} names no accessor after its colon")));
+        }
+        let (hint, type_name) = match typed {
+            Some((h, written)) => (Some(h), Some(written)),
+            None => (None, None),
+        };
+        out.push(FieldMark { name: name.to_string(), hint, type_name, starts_record, accessor });
+        i = close + 1;
+    }
+    Ok(out)
+}
+
 /// Read a marked example.
 ///
 /// # Errors

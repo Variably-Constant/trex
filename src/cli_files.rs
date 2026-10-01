@@ -1745,11 +1745,127 @@ fn print_lines_report(
     });
 }
 
+/// How `scan --fields` reads its inputs.
+struct FieldsScan<'a> {
+    pattern: &'a trex::ast::Pattern,
+    /// The pattern as written: `\{name}` takes the fields a `fields` line
+    /// gives `name`.
+    source: &'a str,
+    shapes: &'a trex::ShapeSet,
+    paths: &'a [String],
+    text: Option<Vec<u8>>,
+    walk: &'a WalkOptions,
+    windowing: &'a Windowing,
+    unit: &'a trex::records::RecordUnit,
+    binary: bool,
+    json: bool,
+    require_match: bool,
+}
+
+/// `scan --fields`: the records the pattern's fields read from each input,
+/// as `infer` reports the records of the lines it built from, the fields as
+/// [`trex::infer::build::fields_for`] chooses them. The table numbers the
+/// records from one and gives the lines each stands on in its input, and
+/// the path of each where there is more than one input; `--json` writes
+/// them as one array, each with its path where it was read from one.
+fn scan_fields(how: FieldsScan<'_>) -> ExitCode {
+    let fields = trex::infer::build::fields_for(how.source, how.pattern, how.shapes);
+    let asked = trex::window::Asked { numbers: true, offsets: false, binary: how.binary, units: false };
+    let mut parts: Vec<(Option<String>, Part)> = Vec::new();
+    let mut failed = false;
+    match (&how.text, how.paths.is_empty()) {
+        (Some(bytes), _) => parts.push((None, Part::of_text(bytes.clone(), how.windowing.select, how.unit))),
+        (None, true) => match read_part(&Source::Stdin, how.windowing.select, how.unit, asked) {
+            Ok(part) => parts.push((Some("-".to_string()), part)),
+            Err(e) => {
+                eprintln!("trex: -: {e}");
+                failed = true;
+            }
+        },
+        (None, false) => {
+            let (sources, errors) = trex::files::collect(how.paths, how.walk);
+            for e in &errors {
+                eprintln!("trex: {e}");
+                failed = true;
+            }
+            for src in &sources {
+                match read_part(src, how.windowing.select, how.unit, asked) {
+                    Ok(part) => parts.push((Some(src.name()), part)),
+                    Err(e) => {
+                        eprintln!("trex: {}: {e}", src.name());
+                        failed = true;
+                    }
+                }
+            }
+        }
+    }
+    let mut records: Vec<(Option<String>, trex::infer::build::Record)> = Vec::new();
+    for (path, part) in &parts {
+        if part.binary && !how.binary {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&part.text);
+        match trex::infer::build::read_records(&fields, how.pattern, how.shapes, &text) {
+            Ok(read) => {
+                let base = part.line_base.expect("--fields asks for line numbers, so the window counts them");
+                for mut record in read {
+                    for line in &mut record.lines {
+                        *line += base;
+                    }
+                    records.push((path.clone(), record));
+                }
+            }
+            Err(e) => {
+                match path {
+                    Some(p) => eprintln!("trex: {p}: {e}"),
+                    None => eprintln!("trex: --text: {e}"),
+                }
+                failed = true;
+            }
+        }
+    }
+    if how.json {
+        let objects: Vec<String> = records
+            .iter()
+            .map(|(path, record)| {
+                let lines: Vec<String> = record.lines.iter().map(|l| (l + 1).to_string()).collect();
+                let values = json_members(&fields, &record.values, None);
+                let path = match path {
+                    Some(p) => format!("\"path\":\"{}\",", crate::json_escape(p)),
+                    None => String::new(),
+                };
+                format!("{{{path}\"lines\":[{}],\"values\":{{{}}}}}", lines.join(","), values.join(","))
+            })
+            .collect();
+        println!("[{}]", objects.join(","));
+    } else {
+        let several = parts.len() > 1;
+        let mut table: Vec<Vec<String>> = vec![
+            several
+                .then(|| "path".to_string())
+                .into_iter()
+                .chain(["record", "lines"].into_iter().map(str::to_string))
+                .chain(fields.iter().map(|f| f.name.clone()))
+                .collect(),
+        ];
+        for (i, (path, record)) in records.iter().enumerate() {
+            let values = record.values.iter().map(|v| match v {
+                Some(v) => v.joined().replace('\n', "\\n"),
+                None => "-".to_string(),
+            });
+            let named = several.then(|| path.clone().expect("several inputs are each read from a path"));
+            table.push(named.into_iter().chain([(i + 1).to_string(), line_runs(&record.lines)]).chain(values).collect());
+        }
+        print!("{}", aligned_table(&table));
+    }
+    if failed || (how.require_match && records.is_empty()) { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
 pub fn run_scan(args: &[String]) -> ExitCode {
     let started = std::time::Instant::now();
     if args.is_empty() {
         eprintln!(
-            "usage: trex scan PATTERN [FILE|DIR|-]... [--text STRING] [--lib FILE] [--json] [--format TEMPLATE] [--require-match] [-A N] [-B N] [-C N] [--count] [-l] [-L] [-H] [--hidden] [--no-ignore] [--binary] [--explain] [-v] [-x] [-o] [-m N] [-e PATTERN]... [-f FILE]... [--patterns FILE] [--single-match] [--rules FILE|DIR]... [--sarif] [--github] [--fix] [--index] [--no-index] [-g GLOB]... [-t TYPE]... [-T TYPE]... [--type-list] [--files] [--sort KEY] [--sortr KEY] [--color WHEN] [--colors SPEC]... [--stats[=line]] [--passthru] [--head N|--tail N|--lines A..B] [--follow]"
+            "usage: trex scan PATTERN [FILE|DIR|-]... [--text STRING] [--lib FILE] [--json] [--format TEMPLATE] [--fields] [--require-match] [-A N] [-B N] [-C N] [--count] [-l] [-L] [-H] [--hidden] [--no-ignore] [--binary] [--explain] [-v] [-x] [-o] [-m N] [-e PATTERN]... [-f FILE]... [--patterns FILE] [--single-match] [--rules FILE|DIR]... [--sarif] [--github] [--fix] [--index] [--no-index] [-g GLOB]... [-t TYPE]... [-T TYPE]... [--type-list] [--files] [--sort KEY] [--sortr KEY] [--color WHEN] [--colors SPEC]... [--stats[=line]] [--passthru] [--head N|--tail N|--lines A..B] [--follow]"
         );
         return ExitCode::FAILURE;
     }
@@ -1774,6 +1890,7 @@ pub fn run_scan(args: &[String]) -> ExitCode {
     let mut walk = WalkOptions::default();
     let mut binary = false;
     let mut explain = false;
+    let mut fields_table = false;
     let mut format: Option<String> = None;
     // Exact by default: the typed parsers hold a value exactly and a JSON
     // number is a double, so a rounded value could disagree with the very
@@ -1880,6 +1997,7 @@ pub fn run_scan(args: &[String]) -> ExitCode {
             "--no-ignore" => walk.no_ignore = true,
             "--binary" => binary = true,
             "--explain" => explain = true,
+            "--fields" => fields_table = true,
             "--format" => {
                 i += 1;
                 let Some(v) = args.get(i) else {
@@ -2360,6 +2478,8 @@ pub fn run_scan(args: &[String]) -> ExitCode {
             }
         }
     }
+    // The pattern as written, which `--fields` reads a `\{name}` from.
+    let mut pattern_text = String::new();
     let scanning = if let Some(file) = &grep.patterns_file {
         if !grep.patterns.is_empty() || !grep.pattern_files.is_empty() {
             eprintln!("trex scan: --patterns names the members and takes no -e or -f");
@@ -2391,6 +2511,7 @@ pub fn run_scan(args: &[String]) -> ExitCode {
         } else {
             patterns.iter().map(|p| format!("({p})")).collect::<Vec<_>>().join(" | ")
         };
+        pattern_text.clone_from(&pattern_src);
         match trex::parser::parse_with_shapes(&pattern_src, &shapes) {
             Ok(p) => Scanning::One(p),
             Err(e) => {
@@ -2400,6 +2521,54 @@ pub fn run_scan(args: &[String]) -> ExitCode {
         }
     };
     let paths = positionals;
+
+    if fields_table {
+        let Scanning::One(pattern) = &scanning else {
+            eprintln!("trex scan: --fields reads one pattern's fields and takes no --patterns set");
+            return ExitCode::FAILURE;
+        };
+        let others = format.is_some()
+            || count
+            || count_matches
+            || files_with_matches
+            || explain
+            || before > 0
+            || after > 0
+            || around.is_some()
+            || grep.queries()
+            || grep.invert
+            || grep.passthru
+            || grep.files_without_match
+            || grep.files_only
+            || grep.windowing.follow;
+        if others {
+            eprintln!(
+                "trex scan: --fields prints its own table of records and takes no --format, count, file listing, \
+                 context, --explain, record query, -v, --passthru or --follow"
+            );
+            return ExitCode::FAILURE;
+        }
+        let unit = match window_unit("scan", &grep.windowing, None, &shapes) {
+            Ok(unit) => unit,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        return scan_fields(FieldsScan {
+            pattern,
+            source: &pattern_text,
+            shapes: &shapes,
+            paths: &paths,
+            text,
+            walk: &walk,
+            windowing: &grep.windowing,
+            unit: &unit,
+            binary,
+            json,
+            require_match,
+        });
+    }
 
     // `-C record` asks what a record IS, not for a record query. Naming it in
     // a context flag is the whole signal: the record flags still say what a
@@ -4288,24 +4457,23 @@ fn json_value(value: Option<&trex::infer::build::Value>) -> String {
 /// holding others as an object of its `text` and theirs, `null` where it
 /// is absent.
 fn json_members(
-    built: &trex::infer::build::Built,
+    fields: &[trex::infer::build::Field],
     values: &[Option<trex::infer::build::Value>],
     parent: Option<usize>,
 ) -> Vec<String> {
-    built
-        .inside(parent)
-        .into_iter()
+    (0..fields.len())
+        .filter(|&f| fields[f].parent == parent)
         .map(|f| {
-            let holds = !built.inside(Some(f)).is_empty();
+            let holds = fields.iter().any(|g| g.parent == Some(f));
             let value = match &values[f] {
                 Some(v) if holds => {
                     let mut members = vec![format!("\"text\":{}", json_value(Some(v)))];
-                    members.extend(json_members(built, values, Some(f)));
+                    members.extend(json_members(fields, values, Some(f)));
                     format!("{{{}}}", members.join(","))
                 }
                 v => json_value(v.as_ref()),
             };
-            format!("\"{}\":{value}", crate::json_escape(built.fields[f].key()))
+            format!("\"{}\":{value}", crate::json_escape(fields[f].key()))
         })
         .collect()
 }
@@ -4370,7 +4538,7 @@ fn built_json(built: &trex::infer::build::Built) -> String {
                 Some(s) => (s + 1).to_string(),
                 None => "null".to_string(),
             };
-            let values = json_members(built, &row.values, None);
+            let values = json_members(&built.fields, &row.values, None);
             format!(
                 "{{\"line\":{},\"text\":\"{}\",\"shape\":{shape},\"values\":{{{}}}}}",
                 r + 1,
@@ -4384,7 +4552,7 @@ fn built_json(built: &trex::infer::build::Built) -> String {
         .iter()
         .map(|record| {
             let lines: Vec<String> = record.lines.iter().map(|r| (r + 1).to_string()).collect();
-            let values = json_members(built, &record.values, None);
+            let values = json_members(&built.fields, &record.values, None);
             format!("{{\"lines\":[{}],\"values\":{{{}}}}}", lines.join(","), values.join(","))
         })
         .collect();

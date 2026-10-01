@@ -254,6 +254,38 @@ Describe 'ConvertFrom-TrexText' {
         $built.Fields.Parent | Should -Be @($null, 'Person', 'Person')
     }
 
+    It 'reads a saved build again without building it: its file keeps each field''s type, record start, order and accessor' {
+        $titles = '2023-10 Cumulative Update for Windows 11 Version 22H2 for x64-based Systems (KB5031354)', '2020-01 Security Monthly Quality Rollup for Windows 7 for x64-based Systems (KB4534310)'
+        $built = $titles | ConvertTo-TrexPattern -Marked '{month:2023-10} Cumulative Update for Windows {[int]os:11} Version {version:22H2} for x64-based Systems ({kb:KB5031354})'
+        "$built" | Should -BeExactly $built.Pattern
+        $built.File.Contains('fields extract {month} {[int]os} {version} {kb}') | Should -BeTrue
+        $path = Join-Path $TestDrive 'updates.trex'
+        Set-Content -LiteralPath $path -Value $built.File
+        $lib = New-TrexLibrary
+        Import-TrexAtom $path -Library $lib
+        $rows = @($titles | ConvertFrom-TrexText '\{extract}' -Library $lib)
+        $rows[0].PSObject.Properties.Name | Should -Be @('month', 'os', 'version', 'kb')
+        $rows[0].os | Should -BeOfType ([int])
+        $rows[1].os | Should -Be 7
+        $rows[1].version | Should -BeNullOrEmpty
+        $pets = 'Name: Wise Owl', 'Phone: 425-888-7766' | ConvertTo-TrexPattern -Marked "Name: {Name*:Phoebe Cat}`nPhone: {phone:425-123-6789}"
+        $petsPath = Join-Path $TestDrive 'pets.trex'
+        Set-Content -LiteralPath $petsPath -Value $pets.File
+        $petsLib = New-TrexLibrary
+        Import-TrexAtom $petsPath -Library $petsLib
+        $read = @("Name: Big Bird`nPhone: 206-555-0100`nName: Elmo Red" | ConvertFrom-TrexText '\{extract}' -Library $petsLib)
+        $read.Name | Should -Be @('Big Bird', 'Elmo Red')
+        $read[0].phone | Should -Be '206-555-0100'
+        $hosts = 'GET https://trex.dev/b 404' | ConvertTo-TrexPattern -Marked 'GET https://{host:example.com}/a {[int]code:200}'
+        $hostsPath = Join-Path $TestDrive 'hosts.trex'
+        Set-Content -LiteralPath $hostsPath -Value $hosts.File
+        $hostsLib = New-TrexLibrary
+        Import-TrexAtom $hostsPath -Library $hostsLib
+        $hit = 'GET https://example.org/x 500' | ConvertFrom-TrexText '\{extract}' -Library $hostsLib
+        $hit.host | Should -BeExactly 'example.org'
+        $hit.code | Should -Be 500
+    }
+
     It 'reads a pattern''s registers as the fields and a part of a token through its accessor' {
         (ConvertFrom-TrexText '\W:verb \N:code' 'GET 200').code | Should -Be '200'
         $hosts = 'GET https://example.com/a 200', 'GET https://trex.dev/b 404' |

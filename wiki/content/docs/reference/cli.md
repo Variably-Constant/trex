@@ -74,6 +74,7 @@ logs/a.log:5
 |---|---|
 | `--shape 'name = `pat`'` | declare a token shape: a bounded byte-pattern the lexer tries before its built-in recognizers, matched as `\{name}`; repeatable |
 | `--shape-after 'name = `pat`'` | the same, tried only where no built-in recognizer matched |
+| `--fields` | print the records the pattern's fields read, a row a record with its lines, as `infer` reports them: the fields a `fields` line gives `\{name}` in a pattern file, each typed, read through its accessor and beginning records as its mark says, else one field per register; with `--json`, the records as an array |
 | `--json` | emit matches as a JSON array; over named inputs each object also carries `path`, `line` and `col`; under `captures` a register nested inside a bound pattern (`pair.k`) is a match-shaped object under its parent, its text and its children under `captures`, and a register bound under a repetition an array of its bindings, each turn of a bound group an object holding its own children |
 | `--require-match` | exit non-zero when nothing matches |
 | `-A N`, `-B N`, `-C N` | print N lines after, before, or around each match's first line. Each also takes a record unit in place of the number - `block`, `unit`, `paragraph`, `record` or any other `--record` names - and prints the whole construct the match sits in, whatever its line count; `-C` both sides of it, `-B` up to the match's line and `-A` from it |
@@ -1332,6 +1333,7 @@ shape kb = `KB[0-9]{7}`
 let extract_1 = ^ (\N "-" \N)?:month "Cumulative" "Update" "Preview"? "for" "Windows" (\N):os "Version" (\N \W?):version "for" "x64" "-" "based" "Systems" "(" (\{kb}):kb ")" ~<($ .)
 let extract_2 = ^ (\N "-" \N):month "Security" "Monthly" "Quality" "Rollup" "for" "Windows" (\N):os "for" "x64" "-" "based" "Systems" "(" (\{kb}):kb ")" ~<($ .)
 let extract = \{extract_1} | \{extract_2}
+fields extract {month} {os} {version} {kb}
 test extract accepts "2023-10 Cumulative Update for Windows 11 Version 22H2 for x64-based Systems (KB5031354)" "2020-01 Security Monthly Quality Rollup for Windows 7 for x64-based Systems (KB4534310)"
 ```
 
@@ -1516,8 +1518,41 @@ $ trex infer --mark 'GET /a {status:200}' 'GET /b 204' --not 'GET /c 500' --lib-
 # Built by trex infer from 2 lines in 1 shape; `extract` names every shape in order.
 let extract_1 = ^ "GET" "/" \W (\N{200..299}):status ~<($ .)
 let extract = \{extract_1}
+fields extract {status}
 test extract accepts "GET /a 200" rejects "GET /c 500"
 ```
+
+A built pattern is a pattern like any other, so it is built once and applied from then on
+without `infer`. The file `--lib-file` writes holds, beside the pattern, a `fields` line keeping
+what the marks said beyond it: each field in order, written as its mark with the example text
+left out, with its `[type]`, the `*` of a field beginning a record, and the accessor of a field
+read from part of a token, as `{host:host}` reads the host of a URL. Saved, the file is read
+with `--lib`, and `scan '\{extract}' --fields` prints the records the fields read, as `infer`
+reports them; `--json` writes them as an array:
+
+```console
+$ trex infer --mark 'GET https://{host:example.com}/a {[int]code:200}' 'GET https://trex.dev/b 404' --lib-file
+# Built by trex infer from 2 lines in 1 shape; `extract` names every shape in order.
+let extract_1 = ^ "GET" (\U):host (\N):code ~<($ .)
+let extract = \{extract_1}
+fields extract {host:host} {[int]code}
+test extract accepts "GET https://example.com/a 200"
+
+$ cat hosts.trex
+let extract_1 = ^ "GET" (\U):host (\N):code ~<($ .)
+let extract = \{extract_1}
+fields extract {host:host} {[int]code}
+
+$ trex scan '\{extract}' --lib hosts.trex --text 'GET https://example.org/x 500' --fields
+record  lines  host         code
+1       1      example.org  500
+
+$ trex scan '\{extract}' --lib hosts.trex --text 'GET https://example.org/x 500' --fields --json
+[{"lines":[1],"values":{"host":"example.org","code":"500"}}]
+```
+
+A field beginning a record makes a record of the lines that follow it, as it does for `infer`;
+`--format` with the template the report prints writes the fields one line a match instead.
 
 ### index
 

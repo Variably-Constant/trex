@@ -663,6 +663,15 @@ impl Pattern {
         !self.shapes.is_empty()
     }
 
+    /// The fields `fields` and `records` read: where the pattern is one
+    /// reference `\{name}` to a sub-pattern `lib=` declared and a `fields`
+    /// line gives that one its fields, those, as the builder read them; else
+    /// one field per register, in written order, a list where it is bound
+    /// under a repetition.
+    fn read_fields(&self) -> Vec<trex::infer::build::Field> {
+        trex::infer::build::fields_for(&self.source, &self.inner, &self.shapes)
+    }
+
     /// Every leftmost, non-overlapping match, as spans.
     fn spans(&self, bytes: &[u8]) -> Vec<trex::Span> {
         if self.shaped() {
@@ -889,6 +898,39 @@ impl Pattern {
             trex::parse(source).map_err(parse_error)?
         };
         Ok(Pattern { inner, source: source.to_string(), shapes })
+    }
+
+    /// The fields `records` reads, each as a dict as `Built.fields` gives
+    /// it. For `\{name}` read under a file whose `fields` line gives `name`
+    /// its fields, as a pattern file `infer` writes does, they are the
+    /// fields the build read; for any other pattern, one per register.
+    #[getter]
+    fn fields<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        field_dicts(py, &self.read_fields())
+    }
+
+    /// The records of `input`, each as a dict as `Built.records` gives it:
+    /// the `lines` its matches stand on, counted from zero, and `values`,
+    /// each field of `fields` by its key, read through its accessor, `None`
+    /// where absent. A match holding a field written `{name*}` begins a
+    /// record and the matches after it join it; with no such field, each
+    /// match is one, and a line repeating its record gives one per repeat.
+    fn records<'py>(&self, py: Python<'py>, input: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let input = Input::of(input)?;
+        let text = String::from_utf8_lossy(input.bytes()).into_owned();
+        let fields = self.read_fields();
+        let records = py
+            .detach(|| trex::infer::build::read_records(&fields, &self.inner, &self.shapes, &text))
+            .map_err(PyValueError::new_err)?;
+        records
+            .iter()
+            .map(|r| {
+                let d = PyDict::new(py);
+                d.set_item("lines", &r.lines)?;
+                d.set_item("values", values_dict(py, &fields, &r.values, None)?)?;
+                Ok(d)
+            })
+            .collect()
     }
 
     /// The matches of `input` grouped by `key`, as `(key, count)` rows.
@@ -1793,41 +1835,69 @@ impl Built {
         }
     }
 
-    /// `values`, one per field in order, as a dict of the fields inside
-    /// `parent` (at the top where it is `None`) by their keys: a str, a list
-    /// of str for a list field, `None` where absent, and for a field holding
-    /// others a dict of its `text` and theirs.
     fn values<'py>(
         &self,
         py: Python<'py>,
         values: &[Option<trex::infer::build::Value>],
         parent: Option<usize>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        use trex::infer::build::Value;
-
-        let d = PyDict::new(py);
-        for (f, field) in self.fields.iter().enumerate().filter(|(_, field)| field.parent == parent) {
-            let holds = self.fields.iter().any(|g| g.parent == Some(f));
-            let one = |v: &Option<Value>| -> PyResult<Py<PyAny>> {
-                Ok(match v {
-                    Some(Value::One(one)) => PyString::new(py, one).into_any().unbind(),
-                    Some(Value::Many(many)) => PyList::new(py, many)?.into_any().unbind(),
-                    None => py.None(),
-                })
-            };
-            match &values[f] {
-                v @ Some(_) if holds => {
-                    let inner = self.values(py, values, Some(f))?;
-                    let object = PyDict::new(py);
-                    object.set_item("text", one(v)?)?;
-                    object.update(inner.as_mapping())?;
-                    d.set_item(field.key(), object)?;
-                }
-                v => d.set_item(field.key(), one(v)?)?,
-            }
-        }
-        Ok(d)
+        values_dict(py, &self.fields, values, parent)
     }
+}
+
+/// `values`, one per field of `fields` in order, as a dict of the fields
+/// inside `parent` (at the top where it is `None`) by their keys: a str, a
+/// list of str for a list field, `None` where absent, and for a field
+/// holding others a dict of its `text` and theirs.
+fn values_dict<'py>(
+    py: Python<'py>,
+    fields: &[trex::infer::build::Field],
+    values: &[Option<trex::infer::build::Value>],
+    parent: Option<usize>,
+) -> PyResult<Bound<'py, PyDict>> {
+    use trex::infer::build::Value;
+
+    let d = PyDict::new(py);
+    for (f, field) in fields.iter().enumerate().filter(|(_, field)| field.parent == parent) {
+        let holds = fields.iter().any(|g| g.parent == Some(f));
+        let one = |v: &Option<Value>| -> PyResult<Py<PyAny>> {
+            Ok(match v {
+                Some(Value::One(one)) => PyString::new(py, one).into_any().unbind(),
+                Some(Value::Many(many)) => PyList::new(py, many)?.into_any().unbind(),
+                None => py.None(),
+            })
+        };
+        match &values[f] {
+            v @ Some(_) if holds => {
+                let inner = values_dict(py, fields, values, Some(f))?;
+                let object = PyDict::new(py);
+                object.set_item("text", one(v)?)?;
+                object.update(inner.as_mapping())?;
+                d.set_item(field.key(), object)?;
+            }
+            v => d.set_item(field.key(), one(v)?)?,
+        }
+    }
+    Ok(d)
+}
+
+/// Each of `fields` as the dict `Built.fields` gives.
+fn field_dicts<'py>(py: Python<'py>, fields: &[trex::infer::build::Field]) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    fields
+        .iter()
+        .map(|f| {
+            let d = PyDict::new(py);
+            d.set_item("name", &f.name)?;
+            d.set_item("accessor", &f.accessor)?;
+            d.set_item("type", &f.type_name)?;
+            d.set_item("starts_record", f.starts_record)?;
+            d.set_item("list", f.list)?;
+            d.set_item("repeats", f.repeats)?;
+            d.set_item("parent", f.parent.map(|p| fields[p].name.as_str()))?;
+            d.set_item("template", &f.template)?;
+            Ok(d)
+        })
+        .collect()
 }
 
 #[pymethods]
@@ -1842,21 +1912,7 @@ impl Built {
     /// the `template` writing it.
     #[getter]
     fn fields<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        self.fields
-            .iter()
-            .map(|f| {
-                let d = PyDict::new(py);
-                d.set_item("name", &f.name)?;
-                d.set_item("accessor", &f.accessor)?;
-                d.set_item("type", &f.type_name)?;
-                d.set_item("starts_record", f.starts_record)?;
-                d.set_item("list", f.list)?;
-                d.set_item("repeats", f.repeats)?;
-                d.set_item("parent", f.parent.map(|p| self.fields[p].name.as_str()))?;
-                d.set_item("template", &f.template)?;
-                Ok(d)
-            })
-            .collect()
+        field_dicts(py, &self.fields)
     }
 
     /// Each shape as a dict: its branch `pattern`, the indexes of its

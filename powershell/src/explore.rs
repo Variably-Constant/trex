@@ -450,7 +450,7 @@ pub struct TrexBuiltPattern {
     pub pattern: String,
     /// A report template writing every field, tab-separated.
     pub format: String,
-    /// The pattern as a file -PatternFile and `trex lib` read.
+    /// The pattern as a file -PatternFile and `trex lib` read, its `fields` line keeping each field's type, record start, accessor and order, so `\{extract}` read under it after Import-TrexAtom writes the objects this pattern writes.
     pub file: String,
     /// The shapes -MintShapes declared, each a line of File, `shape kb =
     /// `KB[0-9]{7}``; the pattern reads only under them, as
@@ -806,28 +806,14 @@ impl Reader {
     }
 
     /// The reader of a Trex.BuiltPattern, whose fields keep the accessor
-    /// and the type the builder gave them; of a Trex.Pattern or source
-    /// text, whose registers are the fields as they read.
+    /// and the type the builder gave them; of `\{name}`, a sub-pattern a
+    /// `fields` line gives its fields, which it reads as the builder did; and
+    /// of any other Trex.Pattern or source text, whose registers are the
+    /// fields as they read.
     fn of(ps: &Pipeline<'_>, given: &PsObject, library: &Option<PsProxy<TrexLibrary>>) -> PsResult<Reader> {
         if given.type_name()? != "Trex.BuiltPattern" {
             let compiled = crate::pattern::pattern_arg(ps, given, library)?;
-            let lists = compiled.inner.list_registers();
-            let fields = compiled
-                .inner
-                .capture_names()
-                .into_iter()
-                .map(|name| trex::infer::build::Field {
-                    list: lists.contains(&name),
-                    template: format!("${{{name}}}"),
-                    name,
-                    accessor: None,
-                    hint: None,
-                    type_name: None,
-                    starts_record: false,
-                    repeats: false,
-                    parent: None,
-                })
-                .collect();
+            let fields = trex::infer::build::fields_for(&compiled.source, &compiled.inner, &compiled.shapes);
             return Reader::new(compiled, fields);
         }
         let text_of = |obj: &PsObject, name: &str| -> PsResult<Option<String>> {
