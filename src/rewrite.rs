@@ -1772,7 +1772,7 @@ impl<'a> Matched<'a> {
     ///
     /// This is the read a `:value` clause makes, so a rewrite computing from
     /// a value and a predicate selecting on one cannot disagree. A byte size
-    /// arrives in bytes, a duration in seconds, a timestamp as a calendar
+    /// arrives in bytes, a duration in nanoseconds, a timestamp as a calendar
     /// instant; nothing is parsed twice.
     #[must_use]
     pub fn value(&self, name: &str) -> Option<crate::typed::TypedValue> {

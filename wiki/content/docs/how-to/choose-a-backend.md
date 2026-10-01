@@ -1,51 +1,109 @@
 ---
+title: Choose a backend
+linkTitle: Choose a backend
 weight: 60
 ---
 
 # Choose a backend
 
-`scan` and `rewrite` pick a backend automatically. You rarely need to override it, but the
-knobs are here when you do.
+Every backend finds the same matches; the choice changes how long a scan takes. Without a
+choice a scan places itself by what the process has measured.
 
-## CPU (the default engine)
+## Keep a scan on the CPU
 
-The default path runs the single-pass engine, falling back to set-reachability for balanced,
-field, or axis patterns. Force it - never probing the device - with `--cpu` (or `--nogpu`):
-
+{{< tabs >}}
+{{< tab name="CLI" >}}
 ```console
 $ trex scan '\N' --text 'n 42' --cpu
 [2..4] "42"
 ```
+{{< /tab >}}
+{{< tab name="Rust" >}}
+```rust
+let pat = trex::parse(r"\N").expect("valid pattern");
+let (spans, used) = trex::scan_with_backend(&pat, b"n 42", trex::Backend::Cpu);
+assert_eq!(spans.len(), 1);
+assert_eq!(used, trex::BackendUsed::Cpu);
+```
+{{< /tab >}}
+{{< tab name="PowerShell" >}}
+```powershell
+PS> Select-TrexMatch '\N' -InputObject 'n 42' -Backend Cpu -Raw
+42
+```
+{{< /tab >}}
+{{< /tabs >}}
 
-## GPU
-
-The automatic choice places each scan by what the process has measured. For a pattern that reads
-nothing of a token but its kind, when a CUDA device is present, it times the CPU engine against a
-split of the input's anchors between the cores and the device in each power-of-two band of input
-size, runs whichever it measured faster in that band, and times both again every thirty-second
-call. A pattern that tests a magnitude, a
-byte class, a literal, a register or a spectral property can also run on the device, with the
-same matches, but a per-call device scan of it is no faster than the CPU engine (five spectral
-patterns over 16 MB: 0.98x on an RTX 5070), so the automatic choice keeps it on the cores. A
-text scanned many times pays for its upload once through `GpuTokens` in the library
-(`upload_with_spectral` holds the spectral reading too): the same five scans run 4.8x faster
-than the engine on held tokens. Force a device attempt with `--gpu` (it warns and falls back if the device is
-unavailable or cannot represent the pattern). The GPU backend is baked in by default and auto-detects the device;
-build with `--no-default-features` for a pure-CPU binary that pulls in no CUDA dependency at
+`--cpu` never probes a device. A build with `--no-default-features` carries no device code at
 all.
+
+## Use the device
+
+For a pattern that reads nothing of a token but its kind, with a CUDA device present, the
+automatic choice times the CPU engine against a split of the input's anchors between the cores
+and the device in each power-of-two band of input size, runs whichever was faster in that band,
+and times both again every thirty-second call. A pattern that tests a magnitude, a byte class, a
+literal, a register or a spectral property also runs on the device with the same matches, but a
+single device scan of it is no faster than the CPU engine (five spectral patterns over 16 MB:
+0.98x on an RTX 5070), so the automatic choice keeps it on the cores. A text scanned many times
+pays for its upload once through `GpuTokens` in Rust, and the same five scans then run 4.8x
+faster than the engine.
+
+`--gpu`, `trex::Backend::Gpu` and `-Backend Gpu` force a device attempt, which warns and falls
+back to the CPU where the device is absent or cannot take the pattern. `trex::device_available()`,
+`trex.device_available()` and `Get-TrexInfo` say whether a device is present.
+
+## Feed the input in pieces
+
+`--chunk-size N` feeds the input through the [stream scanner](../../reference/tools/#streams) in
+N-byte chunks, and `--dual-grain` runs lexing and matching as a pipeline on two threads; both
+give the matches of a whole scan.
+
+```console
+$ cat access.log
+10.0.0.5 GET /index.html 200 5120
+10.0.0.7 GET /login 302 0
+10.0.1.9 GET /missing 404 312
+10.0.0.5 POST /login 200 88
+```
+
+{{< tabs >}}
+{{< tab name="CLI" >}}
+```console
+$ trex scan '\I' access.log --chunk-size 7
+[0..8] "10.0.0.5"
+[34..42] "10.0.0.7"
+[60..68] "10.0.1.9"
+[90..98] "10.0.0.5"
+```
+{{< /tab >}}
+{{< tab name="Rust" >}}
+```rust
+let log = b"10.0.0.5 GET /index.html 200 5120\n10.0.0.7 GET /login 302 0\n10.0.1.9 GET /missing 404 312\n10.0.0.5 POST /login 200 88\n";
+let pat = trex::parse(r"\I").expect("valid pattern");
+let whole = trex::scan(&pat, log);
+assert_eq!(trex::scan_chunked(&pat, log.chunks(7)), whole);
+assert_eq!(trex::scan_dual_grain(&pat, log).0, whole);
+```
+{{< /tab >}}
+{{< tab name="PowerShell" >}}
+```powershell
+PS> Select-TrexMatch '\I' -Path ./access.log -ChunkSize 7 -Raw
+10.0.0.5
+10.0.0.7
+10.0.1.9
+10.0.0.5
+```
+{{< /tab >}}
+{{< /tabs >}}
 
 ## Compressing
 
-The `compress` coder is in a build with the `compress` feature only
-(`cargo build --release --features compress`). It has its own backend dial, and it trades
-differently than scanning: a context mixer learns as it reads, so anything that splits the input
-into independent chunks gives up some of that learning. Sequential CPU is the best ratio.
-Everything else buys speed.
-
-`--chunks N` codes N slices across cores (0 = every logical core), each seeded from the baked
-prior so a chunk does not start cold; the ratio cost is a few percent. `--gpu` maps one chunk
-to one CUDA thread, thousands at once. It reads the baked prior too, projected into the
-device's tables, and `--no-baked` runs it without:
+`trex compress`, in a build with the `compress` feature, has its own backend choice. The coder
+learns as it reads, so splitting the input gives up some of what it learns, and the sequential
+CPU coder gives the shortest code length. `--chunks N` codes N slices across the cores, each
+seeded from the baked prior; `--gpu` codes one chunk a CUDA thread, with the prior projected into
+the device's tables, and `--no-baked` runs it without the prior:
 
 ```console
 $ trex compress --gpu moby.txt
@@ -56,24 +114,8 @@ trex compress: 1234609 bytes -> 451180 bytes  (2.924 bits/byte, 36.5% of origina
   coder: GPU chunked coder (context + orbit + match)   0.45 MB/s   (--compare for the full table)
 ```
 
-The first device compress in a process builds the projected prior - a 1.1 GB table - and holds
-it on the device for later calls, which is most of the gap in speed on an input this small.
-
-Two dials govern it. `TREX_GPU_CHUNK` sets the chunk size, and bigger chunks carry more
-context, so the ratio improves as the chunk grows while the thread count (and the speedup)
-shrinks. `TREX_GPU_OVERLAP` warms each chunk on the bytes just before it, which recovers most
-of what chunking loses. The defaults scale both with the input. `--hybrid` runs the CPU and
-the device at the same time on a head/tail split; it earns its keep only on inputs large
-enough that the device's throughput dominates.
-
-## Streaming
-
-Feed the input in fixed-size chunks and recover the exact whole-input match set with
-`--chunk-size N`. A match commits only once no later byte can change it, so the streamed result
-equals a whole-input scan.
-
-## Dual-grain
-
-`--dual-grain` runs the byte grain (lexing) and the token grain (matching) as a
-producer/consumer pipeline on two threads. The matches are identical to a plain scan; the
-overlap is what the pipeline buys on a large input.
+The sizes are the model's code length rounded up to bytes; no compressed stream is written. The
+first device run in a process builds the projected prior, a 1.1 GB table, and holds it on the
+device for later calls. `TREX_GPU_CHUNK` sets the chunk size, a larger chunk carrying more
+context and fewer threads, and `TREX_GPU_OVERLAP` warms each chunk on the bytes before it.
+`--hybrid` runs the CPU and the device at once on a head and tail split.

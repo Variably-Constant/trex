@@ -1,102 +1,113 @@
 ---
+title: Axes and tools
+linkTitle: Axes and tools
 weight: 40
 ---
 
 # Axes and tools
 
-You can match, bind, and balance. This chapter covers the two remaining halves of trex: the
-**property axes** that read the numeric fields a token stream carries, and the **tools**
-beyond `scan` - rewrite, grammar, and prefilter.
+Read a property of every token, its scale here, and query it from a pattern; then rewrite what a
+pattern finds.
 
-## The property axes
+## Read an axis
 
-A token has more than an identity. It has a scale, sits at a nesting depth, carries a temporal
-texture, belongs to a symmetry class. Each is an **axis**: a field over the stream, available
-both as a standalone command and as a pattern predicate.
+A token has a scale, a nesting depth, a texture and more; each is an [axis](../../reference/axes/),
+read on its own or from a pattern. Magnitude is the order of magnitude of a token's value:
 
-The **magnitude** axis reads the order of magnitude of each token's value - the one thing kind,
-shape, and texture all discard:
-
+{{< tabs >}}
+{{< tab name="CLI" >}}
 ```console
 $ trex magnitude --text 'retries = 3 ; max_bytes = 5000000000'
 trex magnitude: 36 bytes, 7 tokens, total energy 112.2, 3 scale-jump(s)
   peak magnitude: 9.70 at '5000000000'
 ```
+{{< /tab >}}
+{{< tab name="Rust" >}}
+```rust
+let field = trex::magnitude::analyze_bytes(b"retries = 3 ; max_bytes = 5000000000");
+let peak = field.frames.iter().map(|f| f.magnitude).fold(0.0f32, f32::max);
+assert!((peak - 9.70).abs() < 0.01);
+```
+{{< /tab >}}
+{{< tab name="PowerShell" >}}
+```powershell
+PS> (Measure-TrexMagnitude 'retries = 3 ; max_bytes = 5000000000').Peak
 
-Query it from inside a pattern with `\M{...}`. "A token at least six orders of magnitude big":
+Offset Text       Magnitude Gradient Energy
+------ ----       --------- -------- ------
+26     5000000000 9.69897   9.69897  112.2273
+```
+{{< /tab >}}
+{{< /tabs >}}
 
+## Query it from a pattern
+
+`\M{>6}` is a token more than six orders of magnitude big:
+
+{{< tabs >}}
+{{< tab name="CLI" >}}
 ```console
 $ trex scan '\M{>6}' --text 'retries = 3 ; max_bytes = 5000000000'
 [26..36] "5000000000"
 ```
-
-The **orbit** axis folds symmetry-equivalent tokens to one representative. Under the word-shape
-group, `cat`, `dog`, and `bat` are all `CVC`:
-
-```console
-$ trex orbit --collapse --group shape --text 'cat dog bat sat mat the fox'
-trex orbit --collapse (group shape): 7 raw forms -> 2 orbits (3.5x reduction)
-    "CCV"
-    "CVC"  <-  ["bat", "cat", "dog", "fox", "mat", "sat"]
+{{< /tab >}}
+{{< tab name="Rust" >}}
+```rust
+let pat = trex::parse(r"\M{>6}").expect("valid pattern");
+let text = "retries = 3 ; max_bytes = 5000000000";
+assert_eq!(&text[trex::scan(&pat, text.as_bytes())[0].range()], "5000000000");
 ```
-
-The **seam** axis segments a stream where the past stops predicting the future, with no
-delimiter knowledge:
-
-```console
-$ trex seam --text 'the cat sat'
-trex seam: 11 bytes, order 3, 5 segments (bidirectional branching entropy)
-  segments:
-    [     0..3     ] "the"
-    [     3..4     ] " "
-    [     4..7     ] "cat"
-    [     7..8     ] " "
-    [     8..11    ] "sat"
+{{< /tab >}}
+{{< tab name="Python" >}}
+```python
+>>> import trex
+>>> [m.text for m in trex.Pattern(r"\M{>6}").scan("retries = 3 ; max_bytes = 5000000000")]
+['5000000000']
 ```
-
-There are nine axes in all - magnitude, spectral, shape, orbit, seam, stress, flow,
-observation, and echo, which reads whether a token's content returns elsewhere in the
-document. Each has a [reference page](../../reference/axes/) with its full field, flags, and
-the physics it mirrors.
-
-## Rewrite
-
-`rewrite` replaces each match with a rendered template. `${name}` renders a capture, and
-`${name:acc}` transforms or slices it - `upper`, `lower`, `trim`, or a typed sub-field like
-`${ip:octet1-2}`:
-
-```console
-$ trex rewrite '\E:e' '[redacted]' --text 'mail bob@x.com now'
-mail [redacted] now
+{{< /tab >}}
+{{< tab name="PowerShell" >}}
+```powershell
+PS> Select-TrexMatch '\M{>6}' -InputObject 'retries = 3 ; max_bytes = 5000000000' -Raw
+5000000000
 ```
+{{< /tab >}}
+{{< /tabs >}}
 
-## Grammar
+## Rewrite what a pattern finds
 
-`grammar` parses the token stream against named rules. Left-recursive rules encode operator
-precedence with no annotations:
+A template replaces each match: `${name}` renders a register and `${name:acc}` a slice of it:
 
+{{< tabs >}}
+{{< tab name="CLI" >}}
 ```console
-$ trex grammar --grammar-text 'expr := number "+" number' --text '2 + 3'
-(expr 2 + 3)
+$ trex rewrite '\E:e' '[${e:domain}]' --text 'mail bob@x.com now'
+mail [x.com] now
 ```
-
-## Prefilter
-
-`prefilter` answers "might this literal occur?" with an approximate-membership filter, so an
-absent literal is rejected with no corpus scan:
-
-```console
-$ trex prefilter --text 'the quick brown fox ERROR here' --literal ERROR --literal MISSING
-bloom: "ERROR" -> might occur; present (confirmed)
-bloom: "MISSING" -> ABSENT (rejected with no corpus scan)
+{{< /tab >}}
+{{< tab name="Rust" >}}
+```rust
+let pat = trex::parse(r"\E:e").expect("valid pattern");
+let tmpl = trex::Template::parse("[${e:domain}]", &pat.capture_names()).expect("valid template");
+assert_eq!(trex::rewrite(&pat, &tmpl, b"mail bob@x.com now"), b"mail [x.com] now");
 ```
+{{< /tab >}}
+{{< tab name="Python" >}}
+```python
+>>> trex.Pattern(r"\E:e").rewrite("[${e:domain}]", "mail bob@x.com now")
+'mail [x.com] now'
+```
+{{< /tab >}}
+{{< tab name="PowerShell" >}}
+```powershell
+PS> 'mail bob@x.com now' | Edit-TrexText '\E:e' '[${e:domain}]'
+mail [x.com] now
+```
+{{< /tab >}}
+{{< /tabs >}}
 
-## You are done
+## Where next
 
-You can now read and write trex patterns, query every axis, and reach for the right command.
-From here:
-
-- the [How-To guides](../../how-to/) solve specific tasks;
-- the [Reference](../../reference/) is the complete spec;
-- the [Explanation](../../explanation/) covers why the engine never backtracks and how the
-  dual-grain architecture works.
+- [Beyond regex](../beyond-regex/) covers the rest of the pattern language.
+- The [how-to guides](../../how-to/) solve one task each: grammars, prefilters, records, rules.
+- The [reference](../../reference/) is the complete specification.
+- The [explanation](../../explanation/) covers how the engine reads tokens in one pass.

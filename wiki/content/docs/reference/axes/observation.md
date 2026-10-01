@@ -6,135 +6,126 @@ weight: 80
 
 # The observation axis
 
-The vantage substrate. Every reader has a vantage in time: [spectral](../spectral/) reads the
-stream as a single causal forward pass (the state at `t` is the decayed past),
-[seam](../seam/) reads bidirectionally. Neither makes the vantage itself a parameter, nor
-measures how much the reading depends on it. The observation axis does both: it reads the
-same temporal signal (local byte-class entropy) from three vantages and measures the
-disagreement between them.
+The entropy of the byte classes around each byte read from three vantages - the past alone, the
+future alone, and both - and how far the past and the future disagree.
 
-Source: [`src/observation.rs`](https://github.com/Variably-Constant/trex/blob/main/src/observation.rs) · CLI: [`trex observe`](../cli/#observe).
+Source: [`src/observation.rs`](https://github.com/Variably-Constant/trex/blob/main/src/observation.rs).
 
-## Contents
-
-- [Thesis](#thesis)
-- [Signal no other axis reaches](#signal-no-other-axis-reaches)
-- [The three vantages and the event](#the-three-vantages-and-the-event)
-- [Data model](#data-model)
-- [Algorithm](#algorithm)
-- [CLI](#cli)
-- [Physics anchor and taxonomy](#physics-anchor-and-taxonomy)
-- [Design decisions](#design-decisions)
-
-## Thesis
-
-The observation axis reads local byte-class entropy from three vantages - causal (past-only
-window), anti-causal (future-only window), and centered (symmetric window) - and the
-disagreement between the causal and anti-causal readings is the observer-dependence: how much
-the future disambiguates the past at this position.
-
-## Signal no other axis reaches
-
-The disagreement is the bleed / transition / garden-path signal. A causal reader is committed
-to the past and cannot yet see a change a centered reader would, so it smears a boundary
-forward. Where past and future disagree most is exactly where observation matters.
+## What it reads
 
 ```text
 let x = 5; let y = 6; let z = 7; <base64 blob>
 ```
 
-Every byte is read three ways. In the homogeneous code and the homogeneous blob, past and
-future agree (low disagreement). At the code -> blob boundary they diverge - the causal
-vantage still sees code, the anti-causal already sees the blob - so the boundary is the
-contested point. The byte-period and the causal texture both smear it; observation pins it.
-
-## The three vantages and the event
+In the code and in the blob the past and the future agree. At the boundary they diverge: the
+past-only reading still sees code and the future-only reading already sees the blob, so the
+boundary is the contested point. A causal reading, such as the [spectral](../spectral/) texture,
+places the change a window late; the disagreement places it where it is.
 
 | Vantage | Window | Reads |
 |---|---|---|
-| **causal** | `[t-w, t]` | the past only (what an online reader knows) |
-| **anti-causal** | `(t, t+w]` | the future only (what a reverse reader knows) |
-| **centered** | `[t-w/2, t+w/2]` | both (the offline, lag-free reading) |
+| causal | `[t-w, t]` | the past only |
+| anti-causal | `(t, t+w]` | the future only |
+| centered | `[t-w/2, t+w/2]` | both |
 
 | Reading | Meaning |
 |---|---|
-| **disagreement** | `\|causal - anticausal\|`: the observer-dependence at the byte |
+| disagreement | `\|causal - anticausal\|` at the byte |
 
 | Event | Meaning |
 |---|---|
-| **contested** | a local disagreement maximum past the threshold - where observation matters most |
+| contested | a local disagreement maximum past the threshold |
 
-## Data model
+## Reading the axis
 
-### `ObservationFrame` - one byte's reading
-
-| Field | Type | Meaning |
-|---|---|---|
-| `causal` | `f32` | normalised byte-class entropy of the past window |
-| `anticausal` | `f32` | ... of the future window |
-| `centered` | `f32` | ... of the symmetric window |
-| `disagreement` | `f32` | `\|causal - anticausal\|` |
-
-### `ObservationField` - the side table (keyed by byte offset)
-
-| Field | Type | Meaning |
-|---|---|---|
-| `len` | `usize` | input length in bytes |
-| `frames` | `Vec<ObservationFrame>` | one per byte |
-| `contested` | `Vec<usize>` | contested byte offsets (high observer-dependence) |
-
-Query API: `causal_at(byte)`, `disagreement_at(byte)`, `is_contested(byte)`.
-
-## Algorithm
-
-Per byte: normalised Shannon entropy of the byte-class distribution (digit / alpha / space /
-punct / high) over the causal, anti-causal, and centered windows;
-`disagreement = |causal - anticausal|`. Contested points are a second pass for local
-disagreement maxima above the threshold, spaced apart, with the incomplete-window edges
-skipped (a causal observer genuinely has no past at byte 0, so that edge disagreement is an
-artifact, not a transition). One entropy pass plus one contested scan.
-
-## CLI
-
+{{< tabs >}}
+{{< tab name="CLI" >}}
 ```console
 $ trex observe --text 'the old man the boats'
 trex observe: 21 bytes, 2 contested point(s)
   peak observer-dependence: 0.35 at byte 15
 ```
+{{< /tab >}}
+{{< tab name="Rust" >}}
+```rust
+let field = trex::observation::analyze(b"the old man the boats");
+assert_eq!(field.contested, [2, 15]);
+```
+{{< /tab >}}
+{{< tab name="PowerShell" >}}
+```powershell
+PS> Measure-TrexObservation 'the old man the boats' | Select-Object Length, Peak, Contested | Format-List
 
-| Flag | Effect |
-|---|---|
-| `--field` | sampled causal / anticausal / centered / disagreement |
-| `--contested` | the contested points (where past and future disagree most) |
+Length    : 21
+Peak      : at 15, disagreement 0.34939846
+Contested : {at 2, disagreement 0.32912496, at 15, disagreement 0.34939846}
+```
+{{< /tab >}}
+{{< /tabs >}}
 
-## Physics anchor and taxonomy
+`--field` prints the sampled causal, anti-causal, centered and disagreement readings, and
+`--contested` the contested points. In PowerShell `-Detail` adds a frame at every byte.
 
-Observation is the measurement-vantage parameter: when and from which temporal direction the
-system is read. The causal vantage is the online observer (zero latency, smears boundaries);
-the centered vantage is the offline observer (perfect, needs the whole signal); the
-disagreement is the cost of observing online - the information the future holds that the
-present cannot yet see.
+## In a pattern
 
-| Family | Question | Axes |
+`@ambiguous`, `@ambiguous:token`, `@ambiguous:byte` and `@ambiguous:super` are zero-width anchors
+at a contested point at the named grain: the sequence of token kinds, the bytes, or the sequence
+of construct roles.
+
+{{< tabs >}}
+{{< tab name="CLI" >}}
+```console
+$ trex scan '@ambiguous:byte \W' --text 'the old man the boats'
+[0..3] "the"
+```
+{{< /tab >}}
+{{< tab name="Rust" >}}
+```rust
+let pat = trex::parse(r"@ambiguous:byte \W").expect("valid pattern");
+let text = b"the old man the boats";
+assert_eq!(trex::scan(&pat, text).iter().map(|s| &text[s.range()]).collect::<Vec<_>>(), [&b"the"[..]]);
+```
+{{< /tab >}}
+{{< tab name="Python" >}}
+```python
+>>> import trex
+>>> [m.text for m in trex.Pattern(r"@ambiguous:byte \W").scan("the old man the boats")]
+['the']
+```
+{{< /tab >}}
+{{< tab name="PowerShell" >}}
+```powershell
+PS> Select-TrexMatch '@ambiguous:byte \W' -InputObject 'the old man the boats' -Raw
+the
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+## Data model
+
+`ObservationFrame`, one byte's reading:
+
+| Field | Type | Meaning |
 |---|---|---|
-| boundary | where to cut? | BPE, seam |
-| character | what is here? | spectral (temporal), shape (structural) |
-| identity | what is the same? | orbit (symmetry) |
-| scale | how much? | magnitude / energy / gradient |
-| load | how strained? | stress |
-| dynamics | which way, how fast? | flow |
-| **vantage** | **how observer-dependent?** | **observation (causal / anti-causal / centered / contested)** |
+| `causal` | `f32` | normalized byte-class entropy of the past window |
+| `anticausal` | `f32` | the same of the future window |
+| `centered` | `f32` | the same of the symmetric window |
+| `disagreement` | `f32` | `\|causal - anticausal\|` |
 
-It does not read a new property of the stream but the dependence of any temporal reading on
-the observer's position in time. The contested points are where a causal reader needs a
-centered or marker-based override.
+`ObservationField`, keyed by byte offset:
 
-## Design decisions
+| Field | Type | Meaning |
+|---|---|---|
+| `len` | `usize` | input length in bytes |
+| `frames` | `Vec<ObservationFrame>` | one per byte |
+| `contested` | `Vec<usize>` | contested byte offsets |
 
-| ID | Decision | Choice | Why |
-|---|---|---|---|
-| O1 | what observation is | the vantage (causal / anti-causal / centered) a signal is read from | the temporal parameter spectral and seam each fix; here it is explicit |
-| O2 | the signal | local byte-class entropy | the spectral substrate's own quantity, read three ways |
-| O3 | observer-dependence | `\|causal - anticausal\|` | how much the future disambiguates the past |
-| O4 | contested | disagreement maxima, edges skipped | the incomplete-window edges disagree artifactually, not as transitions |
-| O5 | home | `src/observation.rs` + `trex observe`, byte-offset-keyed | the temporal family, composes at the same offsets |
+Query API: `causal_at(byte)`, `disagreement_at(byte)`, `is_contested(byte)`.
+
+## Algorithm
+
+Per byte: the normalized Shannon entropy of the byte-class distribution (digit, alpha, space,
+punct, high) over the causal, anti-causal and centered windows; `disagreement = |causal -
+anticausal|`. Contested points are a second pass for local disagreement maxima above the
+threshold, spaced apart, with the incomplete-window edges skipped, since a causal window has no
+past at byte 0. One entropy pass and one contested scan.

@@ -25,6 +25,12 @@ pub(crate) fn read_err(path: &str, e: impl std::fmt::Display) -> PsError {
     PsError::new(ErrorCategory::ReadError, "TrexRead", format!("{path}: {e}"))
 }
 
+/// What a cmdlet says of a file it was given that holds a NUL byte and so
+/// goes unread.
+pub(crate) fn binary_notice(path: &str) -> String {
+    format!("{path} holds a NUL byte and is binary; -Binary reads it")
+}
+
 /// How many UTF-16 code units the UTF-8 bytes encode: one for every byte that
 /// opens a character, and a second for a four-byte one, which UTF-16 writes
 /// as a surrogate pair. A continuation byte opens nothing.

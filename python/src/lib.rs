@@ -131,6 +131,20 @@ fn no_register(name: &str) -> PyErr {
     PyKeyError::new_err(format!("no register named {name:?}"))
 }
 
+fn not_a_replacement() -> PyErr {
+    PyTypeError::new_err("the replacement is a template str or a callable taking a Match")
+}
+
+/// The file at `path`: its bytes, and its text as a scan reads it, decoded
+/// from the UTF encoding its byte order mark names. Text that is not UTF-8
+/// once decoded is refused, since a str cannot hold it.
+fn file_text(py: Python<'_>, path: &str) -> PyResult<(Vec<u8>, String)> {
+    let raw = py.detach(|| std::fs::read(path)).map_err(|e| PyOSError::new_err(format!("{path}: {e}")))?;
+    let text = String::from_utf8(trex::encoding::text_of(&raw).into_owned())
+        .map_err(|e| PyValueError::new_err(format!("{path}: its text is not UTF-8: {e}")))?;
+    Ok((raw, text))
+}
+
 /// `input` with each edit's bytes in its place, the gaps copied verbatim.
 fn splice(input: &[u8], edits: &[trex::files::Edit]) -> Vec<u8> {
     let mut out = Vec::with_capacity(input.len());
@@ -212,6 +226,13 @@ fn shapes_of(lib: Option<&Bound<'_, PyAny>>) -> PyResult<trex::ShapeSet> {
 /// where the pattern fixes one.
 type CaptureKinds = Arc<[(String, Option<trex::token::TokenKind>)]>;
 
+/// A pattern and the declarations it was read under, shared by the matches
+/// of one call, which `Match.explain` scans with again.
+struct Compiled {
+    pattern: trex::ast::Pattern,
+    shapes: trex::ShapeSet,
+}
+
 /// One match: its span in the input's units and in bytes, its text, and what
 /// the pattern's registers bound.
 #[pyclass(frozen, module = "trex")]
@@ -242,11 +263,11 @@ struct Match {
     /// The kind each register binds, for `value`. Empty where the caller
     /// built this without them, in which case no register reports a value.
     kinds: CaptureKinds,
-    /// The pattern that made this match, for `explain`, shared by the matches
-    /// of one call. The input is not kept beside it: holding one would copy
-    /// the whole of it per scan for a report most callers never ask for, so
-    /// `explain` takes it back instead.
-    pattern: Arc<trex::ast::Pattern>,
+    /// The pattern that made this match and its declarations, for `explain`,
+    /// shared by the matches of one call. The input is not kept beside it:
+    /// holding one would copy the whole of it per scan for a report most
+    /// callers never ask for, so `explain` takes it back instead.
+    pattern: Arc<Compiled>,
     /// The match as the engine reported it, which the explainer reads.
     inner: trex::Match,
 }
@@ -259,7 +280,7 @@ impl Match {
         m: &trex::Match,
         bound: &Arc<[String]>,
         kinds: &CaptureKinds,
-        pattern: &Arc<trex::ast::Pattern>,
+        pattern: &Arc<Compiled>,
     ) -> PyResult<Self> {
         let start = units.at(m.start);
         let end = units.at(m.end);
@@ -500,26 +521,33 @@ impl Match {
     /// `tokens` each significant token the match spans, as `(kind, text)`;
     /// `guards` what each guarded token passed to be its kind; `readings`
     /// each axis the pattern reads, at each token, as `(axis, text, value)`;
-    /// and `route` the rung of the scan ladder that answered.
+    /// and `route` the rung of the scan ladder that answered, read by
+    /// scanning `input` again with the trace recording, as `scan --explain`
+    /// reads it.
     ///
     /// `input` is the text this match was found in, and is taken again rather
     /// than held: keeping it on every match would copy the whole input per
     /// scan for a report most callers never ask for. Passing a different text
     /// explains the match against that text, which is a question about
     /// offsets, not about this match.
-    #[pyo3(signature = (input, route = "scan"))]
-    fn explain(
-        &self,
-        py: Python<'_>,
-        input: &Bound<'_, PyAny>,
-        route: &str,
-    ) -> PyResult<Py<PyDict>> {
+    fn explain(&self, py: Python<'_>, input: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
         let held = Input::of(input)?;
         let bytes = held.bytes();
-        let shapes = trex::ShapeSet::new();
+        let read = &*self.pattern;
         let e = py.detach(|| {
-            trex::explain::Explainer::new(&self.pattern, bytes, &shapes)
-                .explain(&self.inner, route)
+            trex::trace::clear();
+            let route = {
+                // Held to the end of this block, so the rescan's rungs are
+                // kept; the rescan runs for the rung it records.
+                let _recording = trex::trace::Recording::start();
+                let _rescanned = if read.shapes.is_empty() {
+                    trex::scan_with_backend(&read.pattern, bytes, trex::Backend::Auto).0
+                } else {
+                    trex::scan_with_shapes(&read.pattern, bytes, &read.shapes)
+                };
+                trex::explain::route_of(&trex::trace::take_recorded())
+            };
+            trex::explain::Explainer::new(&read.pattern, bytes, &read.shapes).explain(&self.inner, &route)
         });
         let d = PyDict::new(py);
         d.set_item("tokens", e.tokens.clone())?;
@@ -538,8 +566,8 @@ impl Match {
     /// `None` where it binds no single typed kind or its text does not parse
     /// as one.
     ///
-    /// A byte size arrives in bytes, a duration in seconds, a timestamp as a
-    /// timezone-aware `datetime` in UTC, money and a percentage as `Decimal`
+    /// A byte size arrives in bytes, a duration in nanoseconds, a timestamp
+    /// as a timezone-aware `datetime` in UTC, money and a percentage as `Decimal`
     /// so the digits past the point survive, an address as an `int` of its
     /// 32 or 128 bits, a version as its parts and its pre-release
     /// identifiers. This is the read a `:value` clause makes, so a value here
@@ -649,10 +677,10 @@ impl Pattern {
         Arc::from(self.inner.capture_kinds())
     }
 
-    /// The pattern itself, shared by the matches of one call, for `explain`.
-    /// Cloned once a call rather than once a match.
-    fn shared(&self) -> Arc<trex::ast::Pattern> {
-        Arc::new(self.inner.clone())
+    /// The pattern and its declarations, shared by the matches of one call,
+    /// for `explain`. Cloned once a call rather than once a match.
+    fn shared(&self) -> Arc<Compiled> {
+        Arc::new(Compiled { pattern: self.inner.clone(), shapes: self.shapes.clone() })
     }
 
     /// Whether this pattern is read under declarations that change the lex,
@@ -827,7 +855,7 @@ impl Pattern {
             return input.wrap(py, &out);
         }
         if !repl.is_callable() {
-            return Err(PyTypeError::new_err("the replacement is a template str or a callable taking a Match"));
+            return Err(not_a_replacement());
         }
         // The whole input stops at its `take`th match; a window is scanned
         // whole first, since its matches are found over its bytes alone.
@@ -840,23 +868,43 @@ impl Pattern {
             }
             found
         };
+        let edits = self.called(py, repl, input, &found)?;
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut at = range.start;
+        for e in &edits {
+            out.extend_from_slice(&whole[at..e.start]);
+            out.extend_from_slice(&e.replacement);
+            at = e.end;
+        }
+        out.extend_from_slice(&whole[at..range.end]);
+        input.wrap(py, &out)
+    }
+
+    /// The edits replacing each of `found` with what `repl`, a callable,
+    /// returns for it: each match handed over, its replacement taken back in
+    /// the input's type.
+    fn called(
+        &self,
+        py: Python<'_>,
+        repl: &Bound<'_, PyAny>,
+        input: &Input<'_>,
+        found: &[trex::Match],
+    ) -> PyResult<Vec<trex::files::Edit>> {
         let bound = self.bound();
         let kinds = self.kinds();
         let shared = self.shared();
         let mut units = Units::of(input);
-        let mut out = Vec::with_capacity(bytes.len());
-        let mut at = range.start;
-        for m in &found {
-            out.extend_from_slice(&whole[at..m.start]);
+        let mut edits = Vec::with_capacity(found.len());
+        for m in found {
             let piece = repl.call1((Match::of(py, input, &mut units, m, &bound, &kinds, &shared)?,))?;
-            match input {
+            let replacement = match input {
                 Input::Text(_) if piece.is_instance_of::<PyString>() => {
                     let s: &Bound<'_, PyString> = piece.cast()?;
-                    out.extend_from_slice(s.to_str()?.as_bytes());
+                    s.to_str()?.as_bytes().to_vec()
                 }
                 Input::Bytes(_) if piece.is_instance_of::<PyBytes>() => {
                     let b: &Bound<'_, PyBytes> = piece.cast()?;
-                    out.extend_from_slice(b.as_bytes());
+                    b.as_bytes().to_vec()
                 }
                 Input::Text(_) => {
                     return Err(PyTypeError::new_err("the replacement for a str input must be a str"));
@@ -864,11 +912,44 @@ impl Pattern {
                 Input::Bytes(_) => {
                     return Err(PyTypeError::new_err("the replacement for a bytes input must be bytes"));
                 }
-            }
-            at = m.end;
+            };
+            edits.push(trex::files::Edit { start: m.start, end: m.end, replacement });
         }
-        out.extend_from_slice(&whole[at..range.end]);
-        input.wrap(py, &out)
+        Ok(edits)
+    }
+
+    /// The edits `repl` makes of a file's whole text: a template rendered at
+    /// each match, or a callable handed each match.
+    fn file_edits(&self, py: Python<'_>, repl: &Bound<'_, PyAny>, text: &str) -> PyResult<Vec<trex::files::Edit>> {
+        let bytes = text.as_bytes();
+        if repl.is_instance_of::<PyString>() {
+            let template: &Bound<'_, PyString> = repl.cast()?;
+            let t = template_of(&self.inner, template.to_str()?)?;
+            return Ok(py.detach(|| {
+                if self.shaped() {
+                    trex::rewrite::edits_with_shapes(&self.inner, &t, bytes, &self.shapes)
+                } else {
+                    trex::rewrite::edits(&self.inner, &t, bytes)
+                }
+            }));
+        }
+        if !repl.is_callable() {
+            return Err(not_a_replacement());
+        }
+        let input = Input::Text(text);
+        let found = self.all(py, &input);
+        self.called(py, repl, &input, &found)
+    }
+
+    /// The file at `path` as a rewrite reads it: its bytes and its text. A
+    /// file holding a NUL byte is refused as binary, as a rewrite of one named
+    /// file refuses it.
+    fn rewritable(py: Python<'_>, path: &str) -> PyResult<(Vec<u8>, String)> {
+        let (raw, text) = file_text(py, path)?;
+        if trex::files::is_binary(&raw) {
+            return Err(PyValueError::new_err(format!("{path} holds a NUL byte and is binary")));
+        }
+        Ok((raw, text))
     }
 }
 
@@ -1241,6 +1322,35 @@ impl Pattern {
         input.wrap(py, &out)
     }
 
+    /// The unified diff a rewrite of the file at `path` by `repl` would make,
+    /// as `trex rewrite --dry-run` prints it, with `context` lines around each
+    /// change; empty where nothing matches. `repl` is a template, or a
+    /// callable taking a `Match` and returning a str. A binary file raises
+    /// `ValueError`.
+    #[pyo3(signature = (repl, path, *, context = 3))]
+    fn diff(&self, py: Python<'_>, repl: &Bound<'_, PyAny>, path: &str, context: usize) -> PyResult<String> {
+        let (_, text) = Self::rewritable(py, path)?;
+        let edits = self.file_edits(py, repl, &text)?;
+        Ok(trex::files::unified_diff(path, text.as_bytes(), &edits, context))
+    }
+
+    /// Rewrite the file at `path` in place by `repl`, as `trex rewrite
+    /// --in-place` writes one: each replacement in the encoding the file is
+    /// read in, behind its own byte order mark, every byte outside a match
+    /// as it was. Returns how many replacements were made; a file with none
+    /// is not written. A binary file raises `ValueError`.
+    fn rewrite_file(&self, py: Python<'_>, repl: &Bound<'_, PyAny>, path: &str) -> PyResult<usize> {
+        let (raw, text) = Self::rewritable(py, path)?;
+        let edits = self.file_edits(py, repl, &text)?;
+        if edits.is_empty() {
+            return Ok(0);
+        }
+        let out = trex::files::written(&raw, &edits, trex::files::ReadAs::Decoded);
+        py.detach(|| std::fs::write(path, out))
+            .map_err(|e| PyOSError::new_err(format!("{path}: cannot write it: {e}")))?;
+        Ok(edits.len())
+    }
+
     /// The pieces of `input` between its matches.
     fn split(&self, py: Python<'_>, input: &Bound<'_, PyAny>) -> PyResult<Vec<Py<PyAny>>> {
         self.split_upto(py, input, usize::MAX)
@@ -1265,15 +1375,20 @@ struct PatternSet {
     bounds: Vec<Arc<[String]>>,
     /// Each member's capture kinds, in member order, for `Match.value`.
     kinds: Vec<CaptureKinds>,
-    /// Each member's own pattern, in member order, for `Match.explain`.
-    shared: Vec<Arc<trex::ast::Pattern>>,
+    /// Each member's own pattern with the set's declarations, in member
+    /// order, for `Match.explain`.
+    shared: Vec<Arc<Compiled>>,
 }
 
 impl PatternSet {
     fn over(inner: trex::PatternSet) -> Self {
         let bounds = inner.patterns().iter().map(|p| Arc::from(p.capture_names())).collect();
         let kinds = inner.patterns().iter().map(|p| Arc::from(p.capture_kinds())).collect();
-        let shared = inner.patterns().iter().map(|p| Arc::new(p.clone())).collect();
+        let shared = inner
+            .patterns()
+            .iter()
+            .map(|p| Arc::new(Compiled { pattern: p.clone(), shapes: inner.shapes().clone() }))
+            .collect();
         PatternSet { inner, bounds, kinds, shared }
     }
 
@@ -1549,6 +1664,155 @@ fn lines(
 ) -> PyResult<Py<PyAny>> {
     let select = trex::window::Select::parse_range(range).map_err(|e| PyValueError::new_err(format!("lines {e}")))?;
     listed(py, select, input, path, unit)
+}
+
+/// The paths `files` walks: one, or a list of them.
+#[derive(FromPyObject)]
+enum Paths {
+    One(String),
+    Many(Vec<String>),
+}
+
+/// The texture filters `files` takes, each a kind's name and whether it
+/// keeps or drops a file of that kind; a name that is no kind raises
+/// `ValueError`.
+fn texture_filters(keep: Option<Vec<String>>, drop: Option<Vec<String>>) -> PyResult<Vec<(String, bool)>> {
+    let asked: Vec<(String, bool)> = keep
+        .into_iter()
+        .flatten()
+        .map(|n| (n, true))
+        .chain(drop.into_iter().flatten().map(|n| (n, false)))
+        .collect();
+    if let Some((name, _)) = asked.iter().find(|(n, _)| !trex::shape::RegionKind::NAMES.contains(&n.as_str())) {
+        return Err(PyValueError::new_err(format!(
+            "{name:?} is no texture; the textures are {}",
+            trex::shape::RegionKind::NAMES.join(", ")
+        )));
+    }
+    Ok(asked)
+}
+
+/// The files a scan of `paths` reads, as `trex scan --files` lists them: a
+/// file as itself and a directory walked with `.gitignore`, `.ignore` and
+/// `.rgignore` rules applied and hidden entries skipped, `hidden=` and
+/// `no_ignore=` widening the walk; a file holding a NUL byte left out unless
+/// `binary=` asks for it. `globs` keep a walked file by a glob (`*.log`) or
+/// drop it (`!*.min.js`), `types` and `types_not` keep or drop ripgrep's file
+/// types, and `texture` and `texture_not` keep or drop every listed file by
+/// what its text reads as mostly. `sort` orders the files by `"path"`,
+/// `"modified"`, `"accessed"` or `"created"`, `reverse=` largest first. An
+/// error the walk or a read meets raises `OSError` naming every one.
+#[pyfunction]
+#[pyo3(
+    signature = (paths = Paths::One(".".to_string()), *, hidden = false, no_ignore = false, binary = false, globs = None, types = None, types_not = None, texture = None, texture_not = None, sort = None, reverse = false),
+    text_signature = "(paths='.', *, hidden=False, no_ignore=False, binary=False, globs=None, types=None, types_not=None, texture=None, texture_not=None, sort=None, reverse=False)"
+)]
+// Each keyword is one of the walk's own switches, read once here.
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+fn files(
+    py: Python<'_>,
+    paths: Paths,
+    hidden: bool,
+    no_ignore: bool,
+    binary: bool,
+    globs: Option<Vec<String>>,
+    types: Option<Vec<String>>,
+    types_not: Option<Vec<String>>,
+    texture: Option<Vec<String>>,
+    texture_not: Option<Vec<String>>,
+    sort: Option<&str>,
+    reverse: bool,
+) -> PyResult<Vec<String>> {
+    let roots = match paths {
+        Paths::One(p) => vec![p],
+        Paths::Many(ps) => ps,
+    };
+    let sort = match sort {
+        Some(name) => Some(trex::files::Sort {
+            key: trex::files::SortKey::parse(name).ok_or_else(|| {
+                PyValueError::new_err(format!("sort={name:?}: sort by \"path\", \"modified\", \"accessed\" or \"created\""))
+            })?,
+            reverse,
+        }),
+        None if reverse => return Err(PyValueError::new_err("reverse= reverses the order sort= names; give sort=")),
+        None => None,
+    };
+    // A keyword not given is no filter of that kind.
+    let walk = trex::files::WalkOptions {
+        hidden,
+        no_ignore,
+        globs: globs.unwrap_or_default(),
+        types: types.unwrap_or_default(),
+        types_not: types_not.unwrap_or_default(),
+        sort,
+    };
+    walk.check().map_err(PyValueError::new_err)?;
+    let asked = texture_filters(texture, texture_not)?;
+    let (listed, errors) = py.detach(|| {
+        let (sources, mut errors) = trex::files::collect(&roots, &walk);
+        let mut listed = Vec::new();
+        for src in &sources {
+            if let trex::files::Source::File(path) = src {
+                if !binary {
+                    match trex::files::is_binary_file(path) {
+                        Ok(false) => {}
+                        Ok(true) => continue,
+                        Err(e) => {
+                            errors.push(format!("{}: {e}", src.name()));
+                            continue;
+                        }
+                    }
+                }
+                if !asked.is_empty() {
+                    let kind = match std::fs::read(path) {
+                        Ok(raw) => trex::shape::dominant_kind(&trex::encoding::decode(raw)),
+                        Err(e) => {
+                            errors.push(format!("{}: {e}", src.name()));
+                            continue;
+                        }
+                    };
+                    if !trex::shape::keeps_texture(&asked, kind) {
+                        continue;
+                    }
+                }
+            }
+            listed.push(src.name());
+        }
+        (listed, errors)
+    });
+    if !errors.is_empty() {
+        return Err(PyOSError::new_err(errors.join("; ")));
+    }
+    Ok(listed)
+}
+
+/// What the text of `input`, a str or bytes, or of the file at `path=`,
+/// reads as mostly: `("table", period)` with the table's period in tokens,
+/// or the name of another texture with 0, as `trex scan --files --texture`
+/// names it; None for text holding no region.
+#[pyfunction]
+#[pyo3(signature = (input = None, *, path = None))]
+fn texture(py: Python<'_>, input: Option<&Bound<'_, PyAny>>, path: Option<&str>) -> PyResult<Option<(&'static str, u16)>> {
+    let raw = match (input, path) {
+        (Some(obj), None) => Input::of(obj)?.bytes().to_vec(),
+        (None, Some(p)) => py.detach(|| std::fs::read(p)).map_err(|e| PyOSError::new_err(format!("{p}: {e}")))?,
+        (Some(_), Some(_)) | (None, None) => {
+            return Err(PyTypeError::new_err("give the input, a str or bytes, or path=, a file's path; one of them"));
+        }
+    };
+    let kind = py.detach(|| trex::shape::dominant_kind(&trex::encoding::decode(raw)));
+    Ok(kind.map(|k| match k {
+        trex::shape::RegionKind::Table(period) => ("table", period),
+        other => (other.label(), 0),
+    }))
+}
+
+/// The text of the file at `path` as a scan reads it, decoded from the UTF
+/// encoding its byte order mark names. Text that is not UTF-8 once decoded
+/// raises `ValueError`.
+#[pyfunction]
+fn read(py: Python<'_>, path: &str) -> PyResult<String> {
+    Ok(file_text(py, path)?.1)
 }
 
 /// The instant `now` reads in clock clauses such as `\T{age<24h}`, as
@@ -1990,9 +2254,10 @@ impl Built {
 /// The record spans of `text` under `unit`, as `(start, end)` in the input's
 /// units.
 ///
-/// `unit` is a record unit's name (`line`, `paragraph`, `block`) or a pattern
-/// whose matches open a record. A name that is neither is a `ValueError`
-/// listing the names.
+/// `unit` is a record unit's name, as `--record` takes one: `line`,
+/// `paragraph`, `file`, `period`, `seam`, `bind`, `bind:Q`, `auto`,
+/// `texture`, `shape`, `block`, `unit` or `unit:ROLE`. Any other is a
+/// `ValueError` listing the names.
 #[pyfunction]
 fn records(
     py: Python<'_>,
@@ -2039,6 +2304,9 @@ fn trex_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(head, m)?)?;
     m.add_function(wrap_pyfunction!(tail, m)?)?;
     m.add_function(wrap_pyfunction!(lines, m)?)?;
+    m.add_function(wrap_pyfunction!(files, m)?)?;
+    m.add_function(wrap_pyfunction!(texture, m)?)?;
+    m.add_function(wrap_pyfunction!(read, m)?)?;
     m.add_function(wrap_pyfunction!(infer, m)?)?;
     m.add_function(wrap_pyfunction!(records, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;

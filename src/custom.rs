@@ -310,8 +310,9 @@ pub struct ShapeSet {
     /// itself parsed into.
     library_off: bool,
     /// The directory a relative `@file` set in a declaration is read from:
-    /// the pattern file's own while one is being declared, else none, which
-    /// reads from the current directory.
+    /// the pattern file's own while one is being declared, else the one
+    /// [`Self::set_base_dir`] gave, or none, which reads from the current
+    /// directory.
     base: Option<std::path::PathBuf>,
 }
 
@@ -340,6 +341,14 @@ impl ShapeSet {
     #[must_use]
     pub fn base_dir(&self) -> Option<&std::path::Path> {
         self.base.as_deref()
+    }
+
+    /// Read a relative `@file` in a pattern parsed against this set, or in a
+    /// line declared into it, from `dir`, or from the current directory where
+    /// it is `None`. A pattern file declared into the set reads its own from
+    /// beside the file whatever this says.
+    pub fn set_base_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        self.base = dir;
     }
 
     /// Declare everything the pattern file at `path` says, as

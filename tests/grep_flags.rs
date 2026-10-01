@@ -185,6 +185,30 @@ fn sort_orders_the_files_and_sortr_reverses() {
 }
 
 #[test]
+fn files_lists_what_a_scan_reads_leaving_out_binary_files() {
+    let dir = inputs("binary");
+    std::fs::write(dir.0.join("d.bin"), b"ab\0cd\n").expect("write input");
+    let names = |out: &Output| -> Vec<String> {
+        stdout(out).lines().map(|l| l.rsplit(['/', '\\']).next().unwrap_or(l).to_string()).collect()
+    };
+    let out = dir.trex(&["scan", "--files", "."]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(names(&out), ["a.log", "b.txt", "c.rs"]);
+    let out = dir.trex(&["scan", "--files", "--binary", "."]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(names(&out), ["a.log", "b.txt", "c.rs", "d.bin"]);
+    // One file named alone is refused aloud, as a scan of it is; among
+    // several it is left out without a word, as a scan leaves it.
+    let out = dir.trex(&["scan", "--files", "d.bin"]);
+    assert!(!out.status.success());
+    assert_eq!(stdout(&out), "");
+    assert!(stderr(&out).contains("d.bin holds a NUL byte and is binary; --binary scans it"), "{}", stderr(&out));
+    let out = dir.trex(&["scan", "--files", "d.bin", "a.log"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(names(&out), ["a.log"]);
+}
+
+#[test]
 fn stats_open_with_ripgrep_s_eight_lines_or_come_as_one() {
     let out = trex(&["scan", "--stats", "\\N", "--text", "1 2"]);
     assert!(out.status.success(), "{}", stderr(&out));

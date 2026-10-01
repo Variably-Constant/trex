@@ -1,81 +1,125 @@
 ---
+title: Getting started
+linkTitle: Getting started
 weight: 10
 ---
 
 # Getting started
 
-This chapter installs the binary and runs your first scan. It assumes a working Rust toolchain
-(1.96 or newer) and nothing else.
+Install trex and run a first scan on the surface you use: the command line, Rust, Python or
+PowerShell.
 
 ## Install
 
-trex is a single binary with no required system dependencies. It installs from crates.io,
-where the package is `trex-re`; the command it installs is `trex`:
+{{< tabs >}}
+{{< tab name="CLI" >}}
+The package on crates.io is `trex-re`; the command it installs is `trex`. It needs Rust 1.96 or
+newer.
 
 ```console
 $ cargo install trex-re
 $ trex --version
 trex 0.1.0
 ```
+{{< /tab >}}
+{{< tab name="Rust" >}}
+```toml
+[dependencies]
+trex-re = "0.1.0"
+```
 
-A checkout builds the same binary with `cargo build --release`, as `./target/release/trex`.
-The rest of this guide writes `trex` for whichever binary you have.
+The crate is named `trex` in code.
+{{< /tab >}}
+{{< tab name="Python" >}}
+```console
+$ pip install trex-re
+```
 
-## Your first scan
+The module is named `trex`; it needs Python 3.11 or newer.
+{{< /tab >}}
+{{< tab name="PowerShell" >}}
+```powershell
+Install-Module Trex
+```
+{{< /tab >}}
+{{< /tabs >}}
 
-A trex pattern matches over **tokens**, not bytes. The atom `\N` means "one number token":
+## A first scan
 
+A trex pattern matches **tokens**, not characters. `\N` is one number token:
+
+{{< tabs >}}
+{{< tab name="CLI" >}}
 ```console
 $ trex scan '\N' --text 'order 42 shipped'
 [6..8] "42"
 ```
-
-The output is one line per match: the **byte span** `[start..end)` and the matched text. Only
-`42` matched, because it is the only number. The words `order` and `shipped` are word tokens
-(`\W`), not numbers.
-
-{{< callout type="info" >}}
-Every command takes either an inline `--text STRING` or a positional `FILE`. The examples use
-`--text` so you can paste them; swap in a filename to scan a file.
-{{< /callout >}}
-
-## Reading the whole stream
-
-Ask for word tokens instead, and both words match while the number is skipped:
-
-```console
-$ trex scan '\W' --text 'the year 2026'
-[0..3] "the"
-[4..8] "year"
+{{< /tab >}}
+{{< tab name="Rust" >}}
+```rust
+let pat = trex::parse(r"\N").expect("valid pattern");
+let text = "order 42 shipped";
+let spans = trex::scan(&pat, text.as_bytes());
+assert_eq!((spans[0].start(), spans[0].end(), &text[spans[0].range()]), (6, 8, "42"));
 ```
+{{< /tab >}}
+{{< tab name="Python" >}}
+```python
+>>> import trex
+>>> [(m.start, m.end, m.text) for m in trex.Pattern(r"\N").scan("order 42 shipped")]
+[(6, 8, '42')]
+```
+{{< /tab >}}
+{{< tab name="PowerShell" >}}
+```powershell
+PS> Select-TrexMatch '\N' -InputObject 'order 42 shipped' | Select-Object Start, Length, Text
 
-Whitespace between tokens is insignificant, so you never write `\s*`. Two atoms in sequence
-match two tokens in a row - a number followed by a word:
+Start Length Text
+----- ------ ----
+    6      2 42
+```
+{{< /tab >}}
+{{< /tabs >}}
 
+Each match has its span, start inclusive and end exclusive, and its text. `order` and `shipped`
+are word tokens, `\W`, so they do not match.
+
+## Two tokens in a row
+
+Whitespace between tokens is not written, so two atoms in sequence match two tokens in a row:
+
+{{< tabs >}}
+{{< tab name="CLI" >}}
 ```console
 $ trex scan '\N \W' --text 'weight 12 crates'
 [7..16] "12 crates"
 ```
-
-The match span covers `12 crates`: the number `12`, the (insignificant) space, and the word
-`crates`. A unit symbol reads differently - `12 kg` is one quantity token, not a number and a
-word - and `\{qty}` is the atom for those.
-
-## Machine-readable output
-
-Pass `--json` for a JSON array, one object per match, with any captured registers:
-
-```console
-$ trex scan '\N' --text 'order 42 shipped' --json
-[{"start":6,"end":8,"text":"42","captures":{}}]
+{{< /tab >}}
+{{< tab name="Rust" >}}
+```rust
+let pat = trex::parse(r"\N \W").expect("valid pattern");
+let text = "weight 12 crates";
+assert_eq!(&text[trex::scan(&pat, text.as_bytes())[0].range()], "12 crates");
 ```
+{{< /tab >}}
+{{< tab name="Python" >}}
+```python
+>>> trex.Pattern(r"\N \W").find("weight 12 crates").text
+'12 crates'
+```
+{{< /tab >}}
+{{< tab name="PowerShell" >}}
+```powershell
+PS> Select-TrexMatch '\N \W' -InputObject 'weight 12 crates' -Raw
+12 crates
+```
+{{< /tab >}}
+{{< /tabs >}}
 
-`captures` is empty here because this pattern binds nothing. You will fill it in
-[Binding and balance](../binding-and-balance/).
+A number with a unit symbol reads differently: `12 kg` is one quantity token, matched by
+`\{qty}`.
 
 ## Where next
 
-You now have a working binary and can read a match line. Next,
-[your first patterns](../first-patterns/) covers the full set of atoms plus sequence,
-alternation, and quantifiers - everything you need for ordinary matching before the parts a
-regex cannot express.
+[Your first patterns](../first-patterns/) covers the atoms, sequences, alternatives and
+repetition, everything ordinary matching needs before the parts a regex cannot express.

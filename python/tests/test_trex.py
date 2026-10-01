@@ -124,6 +124,23 @@ def test_the_module_reads_a_log_rather_than_standing_in_for_re():
     assert isinstance(why["route"], str) and why["route"]
 
 
+def test_explain_reports_the_rung_that_answered_and_reads_the_declarations(tmp_path):
+    # The rungs `trex scan --explain` names for the same two scans.
+    card = "pay 4111 1111 1111 1111 now"
+    assert trex.Pattern(r"\{card}").find(card).explain(card)["route"] == "a route, not the engine"
+    sizes = "sizes 12 15 9 4000"
+    assert trex.Pattern(r"\N{>+1}").find(sizes).explain(sizes)["route"] == "the set engine over a whole lex"
+    with pytest.raises(TypeError):
+        trex.Pattern(r"\{card}").find(card).explain(card, route="scan")
+    # A pattern read under lib= is explained with its declarations, so a
+    # declared shape is the kind of the token it lexed.
+    lib = tmp_path / "ticket.trex"
+    lib.write_text("shape ticket = `[A-Z]{2,4}-\\d{1,4}`\n", encoding="utf-8")
+    ticket = "see AB-12 now"
+    why = trex.Pattern(r"\{ticket}", lib=str(lib)).find(ticket).explain(ticket)
+    assert why["tokens"] == [("ticket", "AB-12")]
+
+
 def test_typed_tokens_bind_and_back_reference():
     p = trex.Pattern(r"<\W:t>.*</=t>")
     m = p.find("say <div>hi</div> now")
@@ -355,6 +372,101 @@ def test_head_tail_and_lines_read_a_part_of_an_input(tmp_path):
         trex.head(1)
     with pytest.raises(ValueError, match="after its end"):
         trex.lines("3..2", FIVE)
+
+
+def leaves(paths):
+    return [p.replace("\\", "/").rsplit("/", 1)[-1] for p in paths]
+
+
+def test_files_lists_what_a_scan_reads(tmp_path, monkeypatch):
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "a.log").write_text("from 10.0.0.1\n")
+    (tree / "b.txt").write_text("alpha 1\n")
+    (tree / "c.rs").write_text("fn main() {}\n")
+    (tree / "d.bin").write_bytes(b"ab\0cd\n")
+    (tree / ".hidden").write_text("x\n")
+    monkeypatch.chdir(tmp_path)
+    assert leaves(trex.files("tree")) == ["a.log", "b.txt", "c.rs"]
+    assert leaves(trex.files("tree", binary=True)) == ["a.log", "b.txt", "c.rs", "d.bin"]
+    assert leaves(trex.files("tree", hidden=True)) == [".hidden", "a.log", "b.txt", "c.rs"]
+    assert leaves(trex.files(["tree/c.rs", "tree/a.log"])) == ["c.rs", "a.log"]
+    assert leaves(trex.files(["tree/d.bin", "tree/a.log"])) == ["a.log"]
+    assert leaves(trex.files("tree", globs=["*.rs"])) == ["c.rs"]
+    assert leaves(trex.files("tree", globs=["!*.rs"])) == ["a.log", "b.txt"]
+    assert leaves(trex.files("tree", types=["rust"])) == ["c.rs"]
+    assert leaves(trex.files("tree", types_not=["rust"])) == ["a.log", "b.txt"]
+    assert leaves(trex.files("tree", sort="path", reverse=True)) == ["c.rs", "b.txt", "a.log"]
+    assert leaves(trex.files()) == ["a.log", "b.txt", "c.rs"]
+    with pytest.raises(ValueError, match="sort by"):
+        trex.files("tree", sort="size")
+    with pytest.raises(ValueError, match="give sort="):
+        trex.files("tree", reverse=True)
+    with pytest.raises(ValueError, match="no texture"):
+        trex.files("tree", texture=["tabular"])
+    with pytest.raises(ValueError, match="unrecognized file type"):
+        trex.files("tree", types=["bogus"])
+    with pytest.raises(OSError, match="missing"):
+        trex.files("missing")
+
+
+ROWS = "id,host,bytes,ms\n1,alpha,1024,12\n2,beta,2048,19\n3,gamma,4096,31\n4,delta,8192,44\n5,epsilon,16384,57\n6,zeta,32768,73\n"
+PROSE = (
+    "The walk reports what it found rather than what it was asked for. A filter that\n"
+    "silently drops a file reads exactly the same as a directory that never held one, and\n"
+    "the reader cannot tell the two apart afterwards.\n"
+)
+
+
+def test_texture_names_what_text_reads_as_mostly(tmp_path, monkeypatch):
+    assert trex.texture(ROWS) == ("table", 7)
+    assert trex.texture(ROWS.encode()) == ("table", 7)
+    assert trex.texture(PROSE) == ("prose", 0)
+    assert trex.texture("") is None
+    (tmp_path / "rows.csv").write_text(ROWS)
+    (tmp_path / "prose.md").write_text(PROSE)
+    assert trex.texture(path=str(tmp_path / "rows.csv")) == ("table", 7)
+    monkeypatch.chdir(tmp_path)
+    assert leaves(trex.files(".", texture=["table"])) == ["rows.csv"]
+    assert leaves(trex.files(".", texture_not=["table"])) == ["prose.md"]
+    with pytest.raises(TypeError, match="one of them"):
+        trex.texture()
+
+
+def test_read_decodes_a_file_as_a_scan_reads_it(tmp_path):
+    f = tmp_path / "wide.txt"
+    f.write_bytes(b"\xff\xfe" + "café 42\n".encode("utf-16-le"))
+    assert trex.read(str(f)) == "café 42\n"
+    assert trex.Pattern(r"\N").find(trex.read(str(f))).text == "42"
+    latin = tmp_path / "latin.txt"
+    latin.write_bytes(b"caf\xe9\n")
+    with pytest.raises(ValueError, match="not UTF-8"):
+        trex.read(str(latin))
+    with pytest.raises(OSError):
+        trex.read(str(tmp_path / "missing.txt"))
+
+
+def test_a_file_rewrite_diffs_or_writes_in_the_file_s_encoding(tmp_path):
+    p = trex.Pattern('"legacy_call"')
+    f = tmp_path / "notes.md"
+    f.write_bytes(b"\xff\xfe" + "see legacy_call here\n".encode("utf-16-le"))
+    shown = str(f)
+    assert p.diff("current_call", shown) == (
+        f"--- {shown}\n+++ {shown}\n@@ -1,1 +1,1 @@\n-see legacy_call here\n+see current_call here\n"
+    )
+    assert p.diff(lambda m: m.text.upper(), shown).endswith("+see LEGACY_CALL here\n")
+    assert p.rewrite_file("current_call", shown) == 1
+    assert f.read_bytes() == b"\xff\xfe" + "see current_call here\n".encode("utf-16-le")
+    assert p.diff("current_call", shown) == ""
+    assert p.rewrite_file("current_call", shown) == 0
+    binary = tmp_path / "b.bin"
+    binary.write_bytes(b"legacy_call\0")
+    with pytest.raises(ValueError, match="binary"):
+        p.diff("current_call", str(binary))
+    with pytest.raises(ValueError, match="binary"):
+        p.rewrite_file("current_call", str(binary))
+    with pytest.raises(TypeError, match="template str or a callable"):
+        p.rewrite_file(3, shown)
 
 
 def test_a_window_restricts_a_scan_a_rewrite_and_a_redaction():

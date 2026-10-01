@@ -8,34 +8,82 @@ weight: 40
 
 ## Module map
 
+Every public module of the `trex` crate.
+
 | Module | Responsibility |
 |---|---|
-| `token` | typed-token data contract (kinds, spans, bracket mates, kind codes) |
-| `lexer` | bytes to typed tokens, with bracket pairing; unicode-aware, so a multi-byte letter joins its word and a CJK run is one token, never byte shards |
-| `encoding` | input transcoding: BOM-selected UTF-32/16/8, plus strict BOM-less UTF-16 detection that cannot misread binary |
-| `ast` | the pattern AST, quantifier normalization, and the dependence predicates the streaming / pipeline / device paths route on |
-| `parser` | surface syntax to a pattern AST |
-| `bytepat` | the byte grain inside a token: a byte-pattern matcher whole-anchored to one token |
-| `byte_simd` | SIMD substring search backing the content guard |
-| `prefilter` | approximate-membership filters over corpus n-grams (Bloom, Cuckoo, Xor) |
-| `nfa` | the single-pass engine (worst-case linear) and the device bit-NFA tables |
-| `engine` | the set-reachability fold plus register environment, for balanced and field patterns |
-| `parallel_lex` | multi-core tokenization, byte-identical to the serial lexer |
-| `streaming` | chunk-fed scanning with whole-input equivalence |
-| `dual_grain` | the byte-grain / token-grain producer-consumer pipeline |
-| `gpu` | the CUDA SIMT scan backend (on by default; auto-detects the device, falls back to the CPU) |
-| `rewrite` | template substitution over matches: match, render, splice |
-| `grammar` | a parser generator over the universal tokens: named rules, left-recursion as precedence, EBNF quantifiers and groups, and a semiring chart |
+| `action` | the action reading: the magnitude energy `sum(m^2)` and the stress load `sum(depth)` combined over a span |
+| `ast` | the pattern AST the parser emits and the engines consume, with quantifier normalization and the predicates the streaming, pipeline and device paths route on |
 | `bpe` | learned subword tokenization (byte-pair encoding) |
-| `tokutil` / `canon` | shared token utilities and orbit canonicalization |
-| `magnitude` / `spectral` / `shape` / `orbit` / `seam` / `stress` / `flow` / `observation` / `echo` | the [property axes](../../reference/axes/) |
-| `resonator` | a bank of complex-pole resonators over any symbol stream: period and phase at byte, token, and unit grain |
-| `relation` / `curvature` / `geodesic` / `holography` / `entanglement` / `topology` | the two-point tier: enclosure, operator, adjacency and reuse edges between tokens, and the readings over that graph |
-| `profile` | the per-axis monoid that lifts a token reading to a unit, a block, or a document with no level-specific code |
-| `context` | the [rolling context](../../reference/axes/context/): every axis folded over a sliding window at the token and unit rungs, the relation-admitted folds at every token, and the agreement of the grains' boundaries |
-| `supertoken` | the grammar-free unit above the token: a run of tokens collapsed to a role-tagged unit |
-| `custom` | user-declared token shapes: a name and a bounded byte-pattern the lexer runs alongside its built-in recognizers |
-| `tandem` | CPU+GPU batch dispatch through the scheduler's hybrid join (optional `tandem` feature) |
+| `builder` | a pattern built with its readings named, rather than parsed |
+| `byte_dfa` | the determinizer over a byte-grain automaton, built as it is walked |
+| `byte_lex` | the lexer's recognizers as byte automata |
+| `byte_nfa` | a byte-grain nondeterministic automaton and the simulation that reads it |
+| `byte_simd` | SIMD substring search (AVX2, SSE2 or scalar, chosen at run time, each returning the scalar path's position) under the content guard |
+| `bytepat` | the byte grain inside a token: a byte-pattern matched against one whole token |
+| `canon` | the canonical representative of a symmetry orbit |
+| `captures` | a capture buffer the caller owns and refills, and the pattern properties fixed before any input is seen |
+| `context` | the [rolling context](../../reference/axes/context/): every axis folded over a sliding window at the token and unit rungs, and the agreement of the grains' boundaries |
+| `cursor` | matches taken one at a time, and the operations that stop before the end |
+| `curvature` | for each edge of the relation graph, how many neighbours its two ends share: positive in a dense region, negative at a bridge |
+| `custom` | the declarations a lex and a parse share: token shapes, token kinds declared from patterns over the stream, and the named sub-patterns `\{name}` inlines |
+| `decoded` | the decoded content of an encoded token: a base64 blob's bytes, a JSON Web Token's header and payload |
+| `dual_grain` | lexing and matching on two threads as a producer and a consumer ([dual-grain scanning](../dual-grain/)) |
+| `e8` | the E8 root lattice and its Weyl group, the symmetry under the deepest `orbit` rung |
+| `echo` | the [echo axis](../../reference/axes/echo/): whether each token's content occurs elsewhere, how often, how far away and how regularly |
+| `edit` | edit distance over whole tokens: whether one text is within `k` character insertions, deletions or substitutions of another |
+| `encoding` | input transcoding: UTF-32, UTF-16 or UTF-8 selected by a byte-order mark, and BOM-less UTF-16 detected strictly enough never to misread binary |
+| `ends_simd` | the leftmost, non-overlapping selection: the first anchor in a range whose longest match end lies past it, found a vector at a time |
+| `engine` | the set-reachability engine with its register environment, for the patterns the single-pass engine routes away |
+| `entanglement` | the count of enclosure, operator and reuse edges crossing each cut of the token stream; a cut with none splits two independent parts |
+| `explain` | what a match is made of, for `--explain`: the kinds of its tokens, the guard each passed, every axis the pattern read there, and the rung that answered |
+| `files` | the inputs a command reads: a tree walk under ignore rules, the binary check, the line and column of a byte offset, and a unified diff of a rewrite's edits |
+| `flow` | the [flow axis](../../reference/axes/flow/): the windowed slope, direction, momentum and reversals of any per-token signal |
+| `follow` | files followed as they grow: the bytes appended to each, and a note where one was truncated, replaced or removed |
+| `gauge` | a term with each bound name replaced by its de Bruijn index, so terms that differ only by renaming compare equal |
+| `geodesic` | the shortest-path distance between two tokens through the relation graph, read against their distance in the stream |
+| `gpu` | the CUDA SIMT scan backend (the default `gpu` feature): detects the device at run time and falls back to the CPU |
+| `grammar` | a parser generator over the typed tokens: named rules, left recursion as precedence, EBNF quantifiers and groups, and a semiring chart |
+| `gravity` | the pull the input shows one unit type to have on another at a gap, and the readings taken from it |
+| `holography` | whether the sequence of open and close bracket events alone reconstructs the lexer's bracket pairing |
+| `index` | an index over a tree that says which files a pattern cannot match, so a scan never opens them |
+| `infer` | pattern inference: the most specific pattern every example matches, read off an alignment of their token sequences |
+| `isa` | which instruction-set rung this CPU can run, resolved once |
+| `kind_route` | a pattern that is a fixed sequence of token kinds, such as `\W \N`, answered over the lexer's chunk parts in place |
+| `lexer` | bytes to typed tokens with bracket pairing; a multi-byte letter joins its word and a CJK run is one token |
+| `library` | the shipped library: named token kinds with a shape and, where a standard defines one, a checksum guard, and named sub-patterns |
+| `magnitude` | the [magnitude axis](../../reference/axes/magnitude/): each token's order of magnitude, with its energy and gradient |
+| `nfa` | the single-pass engine, a Pike-style virtual machine over the token stream, and the device's bit-NFA tables |
+| `observation` | the [observation axis](../../reference/axes/observation/): byte-class entropy read from past-only, future-only and centred windows, and where they disagree |
+| `orbit` | the [orbit axis](../../reference/axes/orbit/): a token's class under a symmetry such as case, shape or notation |
+| `paint` | color for reports: the depth a console renders, the roles a report paints, and the overrides `--colors` spells |
+| `parallel_lex` | tokenization across cores, byte-identical to the serial lexer |
+| `parser` | a pattern string to a pattern AST |
+| `pattern_set` | many patterns asked of one input over one lex |
+| `prefilter` | approximate-membership filters over a corpus's n-grams (Bloom, Cuckoo, Xor) answering whether a literal might occur, with no false negatives |
+| `prior_cache` | the baked prior laid out on disk as the coder's tables and mapped rather than decoded (the `compress` feature) |
+| `profile` | the per-axis monoid that lifts a token reading to any unit above it |
+| `quantity` | physical quantities: a number with a unit symbol, compared within the unit's family after normalizing to its base unit |
+| `records` | the units a record query (`--all`, `--any`, `--none`, `--at-least`) is asked of: lines, paragraphs, runs between matches, or regions an axis finds |
+| `relation` | the [relation axis](../../reference/axes/relation/): enclosure, operator, adjacency and reuse edges between tokens |
+| `report` | the text of a scan's report for every surface: a match, its registers and an explanation as JSON, and lines with their matches painted |
+| `resonator` | a bank of complex-pole resonators over any symbol stream: period and phase at byte, token and unit grain |
+| `rewrite` | template substitution over matches: match, render, splice |
+| `rule_scan` | the rules of pattern files scanned over an input, each finding reported under its rule with its message, severity and fix |
+| `seam` | the [seam axis](../../reference/axes/seam/): segmentation where the stream stops predicting itself, read in both directions |
+| `shape` | the [shape axis](../../reference/axes/shape/): each token's shape, the period at which shapes repeat, and the regions that repeat like a table |
+| `spectral` | the [spectral axis](../../reference/axes/spectral/): the texture, entropy and period of the byte stream at each position |
+| `streaming` | chunk-fed scanning that recovers exactly the matches a whole-input scan produces |
+| `stress` | the [stress axis](../../reference/axes/stress/): nesting depth, how long open spans are held, and where a deep structure closes |
+| `supertoken` | the unit above the token: a run of tokens collapsed to a role-tagged unit, with no grammar |
+| `tandem` | CPU and GPU batch dispatch through the scheduler's hybrid join (the default `tandem` feature, which implies `gpu`) |
+| `templates` | log-template mining: lines grouped by token-kind silhouette, and the rarity of each line's template |
+| `token` | the typed-token contract the lexer and the engines share: kinds, spans, bracket mates, kind codes |
+| `tokutil` | token utilities the axes share: significant-token lexing, a hasher for pre-hashed keys, and the identifier-shape classifier |
+| `topology` | the relation graph's components, independent cycles `b1 = E - V + b0`, and Euler characteristic |
+| `trace` | which rung of a ladder answered a call |
+| `typed` | typed value predicates: a kind atom's `{...}` body compared in the type's own units |
+| `window` | the part of an input a head, a tail or a line range selects, and readers that fetch only that much |
 
 ## Execution surfaces
 
@@ -44,10 +92,10 @@ caller. Each returns exactly what a plain whole-input scan returns.
 
 | Surface | Entry | What it adds |
 |---|---|---|
-| Whole-input scan | `scan` | the default: single-pass engine, set-reachability for balanced or field patterns |
+| Whole-input scan | `scan` | the default: a route where one answers, then the single-pass engine, then the set-reachability engine ([the engine](../the-engine/)) |
 | Streaming | `scan_chunked` / `StreamScanner` | feed the input in chunks of any size and recover the whole-input match set; a match commits only once no later byte can change it, which for an unbounded pattern means once no attempt still running reaches back over the cut |
 | Parallel tokenization | `parallel_lex::lex_parallel` | lex a large input across cores, stitched byte-identical to the serial lexer |
-| Dual-grain pipeline | `scan_dual_grain` | run the byte grain and the token grain on two threads as a producer and consumer |
+| Dual-grain pipeline | `scan_dual_grain` | run lexing and matching on two threads as a producer and a consumer |
 | Device backend | `scan_gpu`, `GpuTokens` | map the all-starts scan onto a GPU for the alternation-free subset - typed atoms, magnitude tests, literals, byte classes, spectral tests against a per-token reading of the field the host builds, and one-token back-references with host-resolved captures (a bind and a spectral test do not share a device pattern); `GpuTokens` holds the tokens and their properties on the device across scans, `upload_with_spectral` the spectral reading too; falls back to the engine otherwise and when no device is present |
 | Rewrite | `rewrite` / `rewrite_with_backend` | replace each match with a rendered template |
 
@@ -63,12 +111,17 @@ device attempt and `--cpu` forces the engine.
 ## Regex parity
 
 On the subset trex shares with a regular expression - literals, `\N`, `\W`, `.`, sequence,
-`|`, and the greedy and lazy quantifiers - the single-pass engine reports the spans the
-`regex` crate reports. The measurement is `tests/conformance.rs`: it generates a pattern as one
-abstract tree, renders it to both syntaxes so the two are equivalent by construction, and
-compares spans over generated corpora against the crate's PikeVM, its reference machine. The
-sweep ships at 20,000 cases and depth 6, and the engine agrees on every comparison at every
-size run, up to 50,000 cases at depth 6 and 6,000 at depth 10.
+`|`, and the greedy and lazy quantifiers - the single-pass engine reports the spans the `regex`
+crate reports. The measurement is `tests/conformance.rs`: it generates a pattern as one abstract
+tree, renders it to both syntaxes so the two are equivalent by construction, and compares spans
+over generated corpora against the crate's PikeVM, its reference machine. The test runs 20,000
+cases at depth 6 by default, and `TREX_CONFORMANCE_CASES` and `TREX_CONFORMANCE_DEPTH` widen it:
+
+| Cases | Depth | Comparisons | Single-pass engine disagrees | Set-reachability engine disagrees |
+|---|---|---|---|---|
+| 20,000 | 6 | 118,520 | 0 | 73 |
+| 50,000 | 6 | 296,592 | 0 | 172 |
+| 6,000 | 10 | 35,992 | 0 | 54 |
 
 The engine lays a loop out as the crate's compiler does, so the two rank the same derivations
 the same way: a loop head is a plain split, a thread that returns to a head it already reached
@@ -77,8 +130,9 @@ at this position is dropped, and a star over a body that can match empty is laid
 Perl and is dropped as a duplicate in the crate, which then tries the body's other alternatives
 before the exit - trex follows the crate.
 
-The set-reachability engine, which runs only the constructs a regular expression lacks
-(balanced groups, fields, the axis predicates, `||`, `|>`, atomic groups, assertions), is
-compared on the same cases and differs on 0.8 to 1.6 percent of them, on nested quantifiers
-with a lazy inner: `(.+?)+` over `956 116 bar` is one match on the single-pass engine and three
-there. The sweep counts those on every run.
+The set-reachability engine, which runs only the constructs the single-pass engine routes away,
+is compared on the same cases. Its disagreements are nested quantifiers with a lazy inner, where
+it returns several shorter matches in place of one: `(((\N \W . | .) (\N*){2,3}? . | \N*? | \W+?))+ .`
+over `792 foo 313 baz` is the one match `[0..15]` on the single-pass engine and the PikeVM, and
+`[0..11]`, `[12..15]` on the set-reachability engine. The test prints every such case on each
+run.

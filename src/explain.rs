@@ -175,11 +175,15 @@ fn guard_of(kind: TokenKind) -> Option<String> {
     Some(text.to_string())
 }
 
-/// The name a token's kind is written under: the atom name, or the library
-/// entry's for a declared kind.
-fn kind_name(kind: TokenKind) -> String {
+/// The name a token's kind is written under: the atom name, or for a
+/// declared shape or kind, or a library one, the name its declaration gave
+/// it in `shapes`.
+fn kind_name(kind: TokenKind, shapes: &crate::custom::ShapeSet) -> String {
     match kind {
-        TokenKind::Custom(id) => crate::library::name_of(id).unwrap_or("custom").to_string(),
+        TokenKind::Custom(id) => match shapes.name_of(id) {
+            Some(name) => name.to_string(),
+            None => kind.name().to_string(),
+        },
         k => k.name().to_string(),
     }
 }
@@ -319,6 +323,9 @@ impl Axes {
 pub struct Explainer<'a> {
     input: &'a [u8],
     toks: Vec<Token>,
+    /// The declarations the input was lexed under, with the library kinds
+    /// the pattern names, which name a declared token's kind.
+    shapes: crate::custom::ShapeSet,
     axes: Axes,
     context: Option<crate::context::ContextField>,
     relation: Option<crate::context::RelationContext>,
@@ -457,6 +464,7 @@ impl<'a> Explainer<'a> {
         Explainer {
             input,
             toks,
+            shapes,
             axes,
             context,
             relation,
@@ -484,7 +492,7 @@ impl<'a> Explainer<'a> {
         self.toks
             .iter()
             .filter(|t| t.is_significant() && t.start() >= at.start && t.end() <= at.end)
-            .map(|t| (kind_name(t.kind), String::from_utf8_lossy(&self.input[t.span()]).into_owned()))
+            .map(|t| (kind_name(t.kind, &self.shapes), String::from_utf8_lossy(&self.input[t.span()]).into_owned()))
             .collect()
     }
 
@@ -818,5 +826,24 @@ fn scope_name(scope: &Scope) -> String {
         Scope::Echo => "echo".to_string(),
         Scope::Enclosing => "enclosing".to_string(),
         Scope::Key(name) => format!("key {name}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_declared_or_library_kind_is_named_by_its_declaration() {
+        let mut shapes = crate::custom::ShapeSet::new();
+        shapes.declare("ticket = `[A-Z]{2,4}-\\d{1,4}`", crate::custom::Precedence::Before).expect("a bounded shape");
+        let pattern = crate::parser::parse_with_shapes(r"\{ticket}", &shapes).expect("valid pattern");
+        let explainer = Explainer::new(&pattern, b"see AB-12 now", &shapes);
+        assert_eq!(explainer.tokens(4..9), [("ticket".to_string(), "AB-12".to_string())]);
+
+        let iban = b"pay GB82 WEST 1234 5698 7654 32";
+        let pattern = crate::parse(r"\{iban}").expect("valid pattern");
+        let explainer = Explainer::new(&pattern, iban, &crate::custom::ShapeSet::new());
+        assert_eq!(explainer.tokens(4..iban.len()), [("iban".to_string(), "GB82 WEST 1234 5698 7654 32".to_string())]);
     }
 }

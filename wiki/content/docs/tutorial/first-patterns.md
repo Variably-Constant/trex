@@ -1,80 +1,129 @@
 ---
+title: Your first patterns
+linkTitle: Your first patterns
 weight: 20
 ---
 
 # Your first patterns
 
-You can already match single atoms and sequences. This chapter covers the rest of ordinary
-pattern matching: the full atom set, alternation, and quantifiers. None of this needs the
-advanced engine yet - it is the part that overlaps with a regex, only terser.
+The atoms, alternatives, repetition and the named structural shapes called lenses: the part of
+trex that overlaps with a regex.
 
 ## The token atoms
 
-Each atom matches exactly one token of a given kind. The common ones:
+Each atom matches one token of a kind:
 
 | Atom | Matches | Atom | Matches |
 |---|---|---|---|
 | `\N` | a number | `\U` | a URL |
-| `\W` | a word / identifier | `\T` | a timestamp or date |
+| `\W` | a word or identifier | `\T` | a timestamp or date |
 | `\Q` | a quoted string | `\P` | a punctuation token |
 | `\I` | an IP address | `.` | any one token |
-| `\E` | an email | `"lit"` | a literal token equal to `lit` |
+| `\E` | an email address | `"lit"` | a token equal to `lit` |
 
-There are more typed atoms (versions, UUIDs, money, durations, ...); the
-[pattern reference](../../reference/pattern-syntax/) has the full table. The lexer recognises
-each kind, so `\E` matches a whole email as one atom:
+The [pattern syntax](../../reference/pattern-syntax/#token-atoms) lists versions, UUIDs, money,
+durations and the rest. An email is one token, so `\E` matches it whole.
 
+## Alternatives and repetition
+
+`A | B` matches either; `+` one or more, `*` zero or more, `?` one or none, and `{m,n}` between m
+and n:
+
+{{< tabs >}}
+{{< tab name="CLI" >}}
 ```console
-$ trex scan '\E' --text 'ping bob@x.com please'
-[5..14] "bob@x.com"
-```
-
-## Alternation: this or that
-
-`A|B` matches whichever alternative comes first. Numbers or emails:
-
-```console
-$ trex scan '\N|\E' --text 'id 7 mail a@b.com'
+$ trex scan '\N | \E' --text 'id 7 mail a@b.com'
 [3..4] "7"
 [10..17] "a@b.com"
-```
 
-## Quantifiers: how many
-
-Suffix an atom with `*` (zero or more), `+` (one or more), `?` (optional), or `{m,n}` (between
-m and n). A run of numbers:
-
-```console
 $ trex scan '\N+' --text 'coords 1 2 3 stop'
 [7..12] "1 2 3"
-```
 
-The `+` is greedy: it took all three numbers as one match. A counted range splits a longer run
-into the largest allowed chunks:
-
-```console
 $ trex scan '\N{2,3}' --text '1 2 3 4 5'
 [0..5] "1 2 3"
 [6..9] "4 5"
 ```
+{{< /tab >}}
+{{< tab name="Rust" >}}
+```rust
+let found = |pat: &str, text: &str| -> Vec<String> {
+    let p = trex::parse(pat).expect("valid pattern");
+    trex::scan(&p, text.as_bytes()).iter().map(|s| text[s.range()].to_string()).collect()
+};
+assert_eq!(found(r"\N | \E", "id 7 mail a@b.com"), ["7", "a@b.com"]);
+assert_eq!(found(r"\N+", "coords 1 2 3 stop"), ["1 2 3"]);
+assert_eq!(found(r"\N{2,3}", "1 2 3 4 5"), ["1 2 3", "4 5"]);
+```
+{{< /tab >}}
+{{< tab name="Python" >}}
+```python
+>>> import trex
+>>> [m.text for m in trex.Pattern(r"\N | \E").scan("id 7 mail a@b.com")]
+['7', 'a@b.com']
+>>> [m.text for m in trex.Pattern(r"\N+").scan("coords 1 2 3 stop")]
+['1 2 3']
+>>> [m.text for m in trex.Pattern(r"\N{2,3}").scan("1 2 3 4 5")]
+['1 2 3', '4 5']
+```
+{{< /tab >}}
+{{< tab name="PowerShell" >}}
+```powershell
+PS> Select-TrexMatch '\N | \E' -InputObject 'id 7 mail a@b.com' -Raw
+7
+a@b.com
 
-## Lenses: named structural shapes
+PS> Select-TrexMatch '\N+' -InputObject 'coords 1 2 3 stop' -Raw
+1 2 3
 
-A **lens** is a shorthand for a convergent structural shape that holds across languages.
-`@call` is an identifier followed by a balanced parenthesis group - a function call:
+PS> Select-TrexMatch '\N{2,3}' -InputObject '1 2 3 4 5' -Raw
+1 2 3
+4 5
+```
+{{< /tab >}}
+{{< /tabs >}}
 
+`+` takes as many as it can, so `\N+` is one match of three numbers, and `{2,3}` cuts a longer run
+into the largest pieces it allows.
+
+## Lenses
+
+A lens names a structural shape found across languages. `@call` is an identifier followed by a
+balanced parenthesis group:
+
+{{< tabs >}}
+{{< tab name="CLI" >}}
 ```console
 $ trex scan '@call' --text 'foo(1) bar(2, 3)'
 [0..6] "foo(1)"
 [7..16] "bar(2, 3)"
 ```
+{{< /tab >}}
+{{< tab name="Rust" >}}
+```rust
+let pat = trex::parse("@call").expect("valid pattern");
+let text = "foo(1) bar(2, 3)";
+let found: Vec<&str> = trex::scan(&pat, text.as_bytes()).iter().map(|s| &text[s.range()]).collect();
+assert_eq!(found, ["foo(1)", "bar(2, 3)"]);
+```
+{{< /tab >}}
+{{< tab name="Python" >}}
+```python
+>>> [m.text for m in trex.Pattern("@call").scan("foo(1) bar(2, 3)")]
+['foo(1)', 'bar(2, 3)']
+```
+{{< /tab >}}
+{{< tab name="PowerShell" >}}
+```powershell
+PS> Select-TrexMatch '@call' -InputObject 'foo(1) bar(2, 3)' -Raw
+foo(1)
+bar(2, 3)
+```
+{{< /tab >}}
+{{< /tabs >}}
 
-Other lenses name blocks (`@block`), key/value heads (`@kv`), command-line flags (`@flag`),
-comma lists (`@list`), and numeric ranges (`@range`). They all expand to ordinary token
-patterns; the [reference](../../reference/pattern-syntax/#lenses) lists them.
+`@block`, `@kv`, `@flag`, `@list` and `@range` name the others ([lenses](../../reference/pattern-syntax/#lenses)).
 
 ## Where next
 
-Everything so far a regex could also do (more verbosely). Next,
-[binding and balance](../binding-and-balance/) covers the two capabilities that make trex more
-than a terser regex: named registers with back-reference, and true balanced-bracket matching.
+[Binding and balance](../binding-and-balance/) covers named registers with back-references and
+balanced brackets.

@@ -38,7 +38,9 @@ pub struct TrexFileType {
 /// The walk is Select-TrexMatch's: .gitignore and .ignore rules applied,
 /// hidden files skipped unless -Hidden asks for them, and -Include and
 /// -FileType keeping what it finds, while a file named outright is listed
-/// whatever they say. -Texture and -ExcludeTexture read every file listed,
+/// whatever they say. A file holding a NUL byte is binary and is left out,
+/// named or found, as Select-TrexMatch leaves it unread, unless -Binary asks
+/// for it. -Texture and -ExcludeTexture read every file listed,
 /// named or found, as the trex command's `--files` does, and -Classify
 /// reads each file's texture into its Texture without filtering.
 ///
@@ -64,6 +66,10 @@ pub struct GetTrexFile {
     /// Lists files an ignore rule excludes.
     #[param]
     pub no_ignore: bool,
+    /// Lists files that hold a NUL byte, which a scan treats as binary and
+    /// leaves unread.
+    #[param]
+    pub binary: bool,
     /// Keeps a walked file only when a glob matches it (`*.log`), or drops
     /// it for a glob that starts with `!`.
     #[param]
@@ -126,6 +132,16 @@ impl Cmdlet for GetTrexFile {
                 continue;
             };
             let mut file = TrexFile { path: path.display().to_string(), ..TrexFile::default() };
+            if !self.binary {
+                match trex::files::is_binary_file(&path) {
+                    Ok(false) => {}
+                    Ok(true) => continue,
+                    Err(e) => {
+                        ps.write_error(&read_err(&file.path, e))?;
+                        continue;
+                    }
+                }
+            }
             if self.classify || filters {
                 let bytes = match std::fs::read(&path) {
                     Ok(bytes) => bytes,

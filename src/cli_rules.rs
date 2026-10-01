@@ -170,6 +170,7 @@ pub(crate) fn run(mut run: RulesRun<'_>) -> ExitCode {
             failed,
             a_directory,
             binary: run.binary,
+            verb: "fixes",
             dry_run: run.dry_run,
             context: run.context,
             restrict: Restrict::of(&run.windowing, &run.unit),

@@ -471,9 +471,11 @@ pub struct TrexBuiltPattern {
     /// does not hold it.
     pub rows: Vec<PsObject>,
     /// Each record: the indexes in Rows of its Lines, and Values, each
-    /// field's first value among them by name. A line holding a field that
-    /// begins a record begins one and the lines after it join it; with no
-    /// such field, each line is one.
+    /// field's first value among them by name, and for a field holding the
+    /// one that begins the record, as a mark spanning lines does, its text on
+    /// each line joined with a newline. A line holding a field that begins a
+    /// record begins one and the lines after it join it; with no such field,
+    /// each line is one.
     pub records: Vec<PsObject>,
 }
 

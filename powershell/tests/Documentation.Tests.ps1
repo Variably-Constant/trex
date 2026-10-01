@@ -30,10 +30,10 @@ BeforeAll {
 }
 
 Describe 'Documented examples' -Skip:(-not ($PSVersionTable.PSEdition -eq 'Core' -and $IsWindows)) {
-    It 'finds the PowerShell reference among the pages it runs' {
+    It 'finds a tabbed page among the pages it runs' {
         $repo = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $PSScriptRoot '..') '..'))
-        $index = Join-Path $repo 'wiki/content/docs/reference/powershell/_index.md'
-        @(Read-TrexDocumentedPage -Path $index | Where-Object Kind -eq 'Example').Count | Should -BeGreaterThan 0
+        $tabbed = Join-Path $repo 'wiki/content/docs/reference/matching.md'
+        @(Read-TrexDocumentedPage -Path $tabbed | Where-Object Kind -eq 'Example').Count | Should -BeGreaterThan 0
     }
 
     It 'reads every PS> line of <Page> as a command' -ForEach $pages {

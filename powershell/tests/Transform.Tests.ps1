@@ -45,6 +45,20 @@ Describe 'Edit-TrexText' {
         [System.IO.File]::ReadAllText($file) | Should -BeExactly "an old word`n"
     }
 
+    It 'warns of a binary file named outright and passes over one a walk finds' {
+        $dir = Join-Path $TestDrive 'bins'
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        $bin = Join-Path $dir 'b.bin'
+        [System.IO.File]::WriteAllBytes($bin, [byte[]](0x61, 0x62, 0x00, 0x63))
+        foreach ($mode in @{ Diff = $true }, @{ InPlace = $true; Confirm = $false }, @{}) {
+            Edit-TrexText '"ab"' 'XY' -Path $bin @mode -WarningVariable said -WarningAction SilentlyContinue | Should -BeNullOrEmpty
+            "$said" | Should -BeLike '*b.bin holds a NUL byte and is binary; -Binary reads it'
+        }
+        [System.IO.File]::ReadAllBytes($bin) | Should -Be ([byte[]](0x61, 0x62, 0x00, 0x63))
+        Edit-TrexText '"ab"' 'XY' -Path $dir -Diff -WarningVariable walked -WarningAction SilentlyContinue | Should -BeNullOrEmpty
+        $walked | Should -BeNullOrEmpty
+    }
+
     It 'refuses two of -InPlace, -Diff and -Interactive, and -ShowSkipped without a review' {
         $file = Join-Path $TestDrive 'both.txt'
         Write-TrexTestFile -Path $file -Text "a 1`n"

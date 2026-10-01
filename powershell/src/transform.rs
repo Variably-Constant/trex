@@ -20,7 +20,7 @@ use pwrs::prelude::*;
 use crate::atoms::TrexLibrary;
 use crate::common::{Units, arg_err};
 use crate::follow::{EditsAt, FollowedEdit};
-use crate::matching::{files_of, read_whole};
+use crate::matching::{files_of, read_whole, resolved};
 use crate::pattern::{Compiled, TrexMatch, pattern_arg, splice};
 use crate::window::{Part, read_file};
 
@@ -141,11 +141,19 @@ fn write_back(path: &Path, bytes: &[u8]) -> PsResult<()> {
         .map_err(|e| PsError::new(ErrorCategory::WriteError, "TrexWrite", format!("{}: {e}", path.display())))
 }
 
-/// What a read of one file found, its error written to the error stream as
-/// a read that found nothing, so the files after it are still read.
-fn reported<T>(ps: &Pipeline<'_>, read: Result<Option<T>, PsError>) -> PsResult<Option<T>> {
+/// What a read of one file found, its error written to the error stream as a
+/// read that found nothing, so the files after it are still read. A file left
+/// unread for a NUL byte is named in a warning where it was `named` outright,
+/// as Get-TrexLine names one, and passed over where a walk found it.
+fn read_or_warned<T>(ps: &Pipeline<'_>, read: Result<Option<T>, PsError>, named: bool, shown: &str) -> PsResult<Option<T>> {
     match read {
-        Ok(found) => Ok(found),
+        Ok(Some(found)) => Ok(Some(found)),
+        Ok(None) => {
+            if named {
+                ps.warning(&crate::common::binary_notice(shown))?;
+            }
+            Ok(None)
+        }
         Err(e) => {
             ps.write_error(&e)?;
             Ok(None)
@@ -393,6 +401,8 @@ fn over_files(
     edits_of: &mut EditsOf<'_>,
 ) -> PsResult<()> {
     let mut queue: Vec<Pending> = Vec::new();
+    let given: Vec<PathBuf> =
+        resolved(ps, &reading.paths, reading.literal)?.into_iter().map(PathBuf::from).collect();
     for source in files_of(ps, &reading.paths, reading.literal, &reading.opts)? {
         if ps.stopping() {
             break;
@@ -401,17 +411,18 @@ fn over_files(
             continue;
         };
         let shown = path.display().to_string();
+        let named = given.contains(&path);
         match out {
             FileOut::Text => {
                 let read = read_file(&path, reading.part.select, &reading.part.unit, reading.binary, reading.placed);
-                let Some(read) = reported(ps, read)? else {
+                let Some(read) = read_or_warned(ps, read, named, &shown)? else {
                     continue;
                 };
                 let edits = edits_of(&read.text, read.unit_base)?;
                 ps.write(String::from_utf8_lossy(&splice(read.text.as_bytes(), &edits)).into_owned())?;
             }
             FileOut::Diff => {
-                let Some((_, text)) = reported(ps, read_whole(&path, reading.binary))? else {
+                let Some((_, text)) = read_or_warned(ps, read_whole(&path, reading.binary), named, &shown)? else {
                     continue;
                 };
                 let edits = reading.part.edits_within(&text, reading.placed, edits_of)?;
@@ -420,7 +431,7 @@ fn over_files(
                 }
             }
             FileOut::InPlace => {
-                let Some((raw, text)) = reported(ps, read_whole(&path, reading.binary))? else {
+                let Some((raw, text)) = read_or_warned(ps, read_whole(&path, reading.binary), named, &shown)? else {
                     continue;
                 };
                 let edits = reading.part.edits_within(&text, reading.placed, edits_of)?;
@@ -429,7 +440,7 @@ fn over_files(
                 }
             }
             FileOut::Review { .. } => {
-                let Some((raw, text)) = reported(ps, read_whole(&path, reading.binary))? else {
+                let Some((raw, text)) = read_or_warned(ps, read_whole(&path, reading.binary), named, &shown)? else {
                     continue;
                 };
                 let edits = reading.part.edits_within(&text, reading.placed, edits_of)?;
@@ -489,7 +500,7 @@ fn start_following(
         return Err(PsError::new(
             ErrorCategory::InvalidData,
             "TrexBinary",
-            format!("{shown} holds a NUL byte and is binary; -Binary reads it"),
+            crate::common::binary_notice(&shown),
         ));
     };
     let mut followed = FollowedEdit::new(path, shown, &read, c);
@@ -558,7 +569,8 @@ fn follow_on(
 /// rewritten; -Path writes each file's rewritten text, -InPlace writes the
 /// files that have a match back where they are, and -Diff writes the unified
 /// diff each would take. -MaxCount replaces only the first matches of each
-/// input.
+/// input. A file named outright that holds a NUL byte is left as it is and
+/// named in a warning, unless -Binary asks for it; a walk passes over one.
 ///
 /// -Head, -Tail and -Lines rewrite the first lines of each input, its last,
 /// or a range of them, counted in records of -Unit where it names one: the
@@ -755,7 +767,9 @@ impl Cmdlet for EditTrexText {
 /// keeps every other character so the text still lexes as it did, or
 /// `pseudonym`, which gives each distinct value a stable name per kind. Text
 /// piped in comes back masked; -Path writes each file's masked text,
-/// -InPlace writes the files back, and -Diff writes the unified diff.
+/// -InPlace writes the files back, and -Diff writes the unified diff. A file
+/// named outright that holds a NUL byte is left as it is and named in a
+/// warning, unless -Binary asks for it; a walk passes over one.
 ///
 /// -Head, -Tail and -Lines mask the first lines of each input, its last, or
 /// a range of them, counted in records of -Unit where it names one: the text

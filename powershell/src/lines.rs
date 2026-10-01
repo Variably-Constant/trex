@@ -168,7 +168,7 @@ impl Cmdlet for GetTrexLine {
             let read = match read_file(&path, self.select, &unit, self.binary, !self.passthru) {
                 Ok(Some(read)) => read,
                 Ok(None) => {
-                    ps.warning(&format!("{shown} holds a NUL byte and is binary; -Binary reads it"))?;
+                    ps.warning(&crate::common::binary_notice(&shown))?;
                     continue;
                 }
                 Err(e) => {

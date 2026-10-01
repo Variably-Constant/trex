@@ -6,46 +6,54 @@ weight: 10
 
 # Why tokens
 
-A regular expression works one byte at a time. That single fact is behind most of the
-friction. A number is `[-+]?\d+(?:\.\d+)?`. Whitespace has to be spelled out with `\s*`
-wherever two things sit next to each other. Capture groups are numbered by counting open
-parentheses, so inserting one three lines up renumbers every reference below it.
+A regular expression's alphabet is bytes. A number is `[-+]?\d+(?:\.\d+)?`, whitespace is spelled
+`\s*` wherever two things sit next to each other, and capture groups are numbered by counting open
+parentheses, so inserting one renumbers every reference after it.
 
-Move the recognition into a lexer and the friction goes away. Once a span has been classed as
-a whole number or a whole quoted string it is one atom, `\N` or `\Q`, not a sub-expression.
-Whitespace between atoms means nothing, so it never appears. Captures carry names instead of
-positions, so a new group disturbs nothing.
+trex's alphabet is typed tokens. A span the lexer classes as a number or a quoted string is one
+atom, `\N` or `\Q`. Whitespace between atoms is insignificant, so a pattern never spells it.
+Captures carry names, so adding one renumbers nothing.
 
-## What the lexer unlocks
+## What the lexer makes expressible
 
-Pairing brackets is something a regex cannot do at all. `(a(b)c)` needs to know that the last
-`)` closes the first `(`, and that is counting; a regular language cannot count. The lexer
-pairs `()`, `[]`, and `{}` as it runs, so a balanced group is a single glyph, `\B(...)`, with
-the nesting already resolved.
+Bracket pairing. `(a(b)c)` needs the last `)` matched to the first `(`, which is counting, and a
+regular language cannot count. The lexer pairs `()`, `[]` and `{}` as it runs, so a balanced
+group is the one atom `\B(...)` with the nesting already resolved.
 
-Long-distance equality is the other one. `:name` writes the matched token into a register and
-`=name` later demands a token equal to it. A regex spells this with a backreference, and the
-backreference is what opens the door to catastrophic backtracking. Here it is a lookup in a
-register set, which has nothing to backtrack.
+Long-distance equality. `:name` writes the matched token into a register and `=name` later
+requires a token equal to it. A backtracking regex spells this with a backreference, the
+construct behind catastrophic backtracking; trex answers it with a register lookup and never
+backtracks.
 
-Unicode gets the same treatment. Byte-level tokenizers are notorious for shattering a CJK
-character into fragments, and a byte regex sees the fragments too. The lexer decodes whole
-chars instead: `中文分词` is one Word token and `\W` matches it whole, an em-dash or a curly
-quote is one Punct token, and a file in UTF-16 or UTF-32 transcodes on the way in, so a
-Windows-written log needs no conversion step.
+Whole characters. The lexer decodes characters rather than bytes, so `中文分词` is one word
+token that `\W` matches whole, and an em-dash or a curly quote is one punctuation token:
 
-## Token-mode semantics
+```console
+$ trex scan '\W' --text '中文分词 a—b “q”'
+[0..12] "中文分词"
+[13..14] "a"
+[17..18] "b"
+[22..23] "q"
 
-A few habits change once the alphabet is tokens. `\s*` litter never appears, because
-whitespace between atoms is already insignificant; drop to the byte grain (`\d`, `\w`, a
-`` `byte-regex` ``) when you need detail inside a token. Literals are whole tokens, so `.`,
-`(`, and `)` match as themselves with no escaping. And a reference is by name, so it survives
-any edit above it.
+$ trex scan '\P' --text '中文分词 a—b “q”'
+[14..17] "—"
+[19..22] "“"
+[23..26] "”"
+```
+
+Input in UTF-32, UTF-16 or UTF-8 with a byte-order mark, or in UTF-16 without one, is transcoded
+to UTF-8 before it is lexed.
+
+## Token-mode habits
+
+Whitespace between atoms is never written. The byte classes `\d`, `\w` and a
+`` `byte-pattern` `` read inside one token. A literal is a quoted whole token, so `"("`, `")"`
+and `"."` match themselves with no escaping, while an unquoted `.` is any one token. A reference
+is by name, so an edit above it leaves it pointing at the same register.
 
 ## What it costs
 
-trex tokenizes before it matches, so on a plain literal search a finely-tuned byte regex will
-out-throughput it. That is fine; throughput is not the trade. What the tokenizing pass buys is
-the work a regex rejects or cannot state - binding, balance, guards, the property axes -
-alongside shorter patterns and no backtracking cliff. The [engine](../the-engine/) is where
-that last claim is made good.
+trex lexes before it matches, so on a plain literal search the regex crate is faster. What the
+lexing buys is what a byte regex cannot state: binding, balance, guards and the
+[property axes](../../reference/axes/). The [engine](../the-engine/) says how a match runs with no
+backtracking.

@@ -8,11 +8,13 @@
 //! widely-used regex engines.
 //!
 //! trex has no backtracking. The analogous nested-quantifier token
-//! pattern `(.*)* "ZZZ"` over a long non-matching token stream is
+//! pattern `(.*)* \N` over a long stream of words with no number is
 //! scanned in linear time by the single-pass engine. This example
 //! runs both across a size sweep and self-checks the growth shapes:
 //! the backtracker grows superlinearly (time roughly doubles per two
-//! extra characters), trex stays flat per token.
+//! extra characters), trex stays flat per token. It also checks, from
+//! the recorded trace, that the single-pass engine answered the trex
+//! scan rather than a route that answers before the engine runs.
 //!
 //! Run: `cargo run --release --example linear_immunity`
 
@@ -114,12 +116,28 @@ fn main() {
     );
     println!("   superlinear: worst two-character step was {worst_ratio:.2}x (a linear engine is ~1.0x)");
 
-    println!("\n== trex: (.*)* \"ZZZ\" over a long non-matching token stream ==");
+    println!("\n== trex: (.*)* \\N over a long stream of words with no number ==");
     println!("   the same nested-quantifier shape, scanned in one pass\n");
-    let pat = parse(r#"(.*)* "ZZZ""#).expect("pattern parses");
+    let pat = parse(r"(.*)* \N").expect("pattern parses");
+    let sizes = [50_000usize, 100_000, 200_000, 400_000, 800_000];
+
+    // One untimed scan of every size with the rungs kept, so the timings
+    // below are of the engine and do not price the trace.
+    let recording = trex::trace::Recording::start();
+    for &n in &sizes {
+        assert!(scan(&pat, "a ".repeat(n).as_bytes()).is_empty(), "the adversarial pattern must not match");
+        let rungs = trex::trace::take_recorded();
+        assert!(
+            rungs.iter().any(|r| r.ladder == "scan" && r.rung == "the single-pass engine over a whole lex"),
+            "the single-pass engine must answer the scan of {n} tokens; the rungs were {rungs:?}"
+        );
+    }
+    drop(recording);
+    println!("   every size answered by: the single-pass engine over a whole lex\n");
+
     let mut samples: Vec<(usize, f64)> = Vec::new();
-    for n in [50_000usize, 100_000, 200_000, 400_000, 800_000] {
-        // n word tokens separated by spaces; "ZZZ" never appears.
+    for n in sizes {
+        // n word tokens separated by spaces; no number appears.
         let input = "a ".repeat(n);
         let start = Instant::now();
         let matches = scan(&pat, input.as_bytes());

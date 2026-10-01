@@ -60,7 +60,9 @@ Written by [Import-TrexBpe](../streams/#import-trexbpe), [New-TrexBpe](../stream
 
 One field of a built pattern.
 
-Written by [ConvertTo-TrexPattern](../records/#convertto-trexpattern), as a built pattern's Fields.
+Inside another object, and as a string, it shows as `{Name}`.
+
+Held in [Trex.BuiltPattern](#trexbuiltpattern).Fields.
 
 | Property | Type | Holds |
 |---|---|---|
@@ -73,9 +75,15 @@ Written by [ConvertTo-TrexPattern](../records/#convertto-trexpattern), as a buil
 | `Parent` | object | The name of the field whose mark holds this one's, whose value then holds this field's under its last name part; `$null` at the top. |
 | `Template` | string | How a report template writes the field. |
 
+| Method | Returns | Does |
+|---|---|---|
+| `ToString()` | string | The object as text, `{Name}`, each braced name read from that property. |
+
 ### Trex.BuiltPattern
 
 A pattern built for named fields, with the report on it. Its string form is the pattern.
+
+Inside another object, and as a string, it shows as `{Pattern}`.
 
 Written by [ConvertTo-TrexPattern](../records/#convertto-trexpattern).
 
@@ -84,24 +92,34 @@ Written by [ConvertTo-TrexPattern](../records/#convertto-trexpattern).
 | `Pattern` | string | The pattern, one branch per shape. |
 | `Format` | string | A report template writing every field, tab-separated. |
 | `File` | string | The pattern as a file -PatternFile and `trex lib` read, its `fields` line keeping each field's type, record start, accessor and order, so `\{extract}` read under it after Import-TrexAtom writes the objects this pattern writes. |
-| `Suggestions` | string[] | Each field every value of which a value class of the library holds, where no counter-example called for one, as `field: \{class} ...`; a -NotExample one of them refuses prints it in the pattern. |
 | `Declarations` | string[] | The shapes -MintShapes declared, each a line of File, `shape kb = `KB[0-9]{7}``; the pattern reads only under them, as ConvertFrom-TrexText reads it. |
+| `Suggestions` | string[] | Each field every value of which a value class of the library holds, where no counter-example called for one, as `field: \{class} ...`; a -NotExample one of them refuses prints it in the pattern. |
 | `Fields` | [Trex.BuiltField](#trexbuiltfield)[] | The fields, in the order first marked or named. |
 | `Shapes` | [Trex.BuiltShape](#trexbuiltshape)[] | The shapes, in the order their branches stand in the pattern. |
 | `Rows` | object[] | Each line: its Line index, the index of its Shape (`$null` for a line with no token), its Text, and Values, each field's value by name (an array of strings for a list field, a hashtable of Text and the fields inside for a field holding others), `$null` where the line does not hold it. |
 | `Records` | object[] | Each record: the indexes in Rows of its Lines, and Values, each field's first value among them by name, and for a field holding the one that begins the record, as a mark spanning lines does, its text on each line joined with a newline. A line holding a field that begins a record begins one and the lines after it join it; with no such field, each line is one. |
 
+| Method | Returns | Does |
+|---|---|---|
+| `ToString()` | string | The object as text, `{Pattern}`, each braced name read from that property. |
+
 ### Trex.BuiltShape
 
 One shape of the lines a built pattern reads: a branch of the pattern.
 
-Written by [ConvertTo-TrexPattern](../records/#convertto-trexpattern), as a built pattern's Shapes.
+Inside another object, and as a string, it shows as `{Pattern}`.
+
+Held in [Trex.BuiltPattern](#trexbuiltpattern).Shapes.
 
 | Property | Type | Holds |
 |---|---|---|
 | `Pattern` | string | The branch. |
 | `Lines` | long[] | The indexes in Rows of the lines of this shape. |
 | `Reach` | object | How the shape reaches each field, by name: `marked`, `missing`, or the index in Shapes of the shape whose literals place it here. |
+
+| Method | Returns | Does |
+|---|---|---|
+| `ToString()` | string | The object as text, `{Pattern}`, each braced name read from that property. |
 
 ### Trex.Capture
 
@@ -400,7 +418,7 @@ Written by [New-TrexLibrary](../atoms/#new-trexlibrary).
 
 | Method | Returns | Does |
 |---|---|---|
-| `Declare(string line)` | void | Declares one line as a pattern file writes it: `shape name = \`bytes\``, `kind name = pattern`, `let name = pattern`, or a `test` line. |
+| `Declare(string line)` | void | Declares one line as a pattern file writes it: `shape name = \`bytes\``, `kind name = pattern`, `let name = pattern`, or a `test` line. A relative `@file` in it is read from the location the library was made at. |
 
 ### Trex.Line
 

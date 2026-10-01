@@ -142,9 +142,14 @@ Describe 'Select-TrexMatch over files' {
         $m.Text | Should -BeExactly '12000'
     }
 
-    It 'skips a binary file unless -Binary asks for it' {
-        @(Select-TrexMatch '\N' -Path (Join-Path $logs 'c.bin')).Count | Should -Be 0
-        @(Select-TrexMatch '\N' -Path (Join-Path $logs 'c.bin') -Binary).Count | Should -Be 1
+    It 'skips a binary file unless -Binary asks for it, warning of one named outright' {
+        $bin = Join-Path $logs 'c.bin'
+        @(Select-TrexMatch '\N' -Path $bin -WarningVariable said -WarningAction SilentlyContinue).Count | Should -Be 0
+        "$said" | Should -BeLike '*c.bin holds a NUL byte and is binary; -Binary reads it'
+        @(Select-TrexMatch '\N' -Path $bin -Binary -WarningVariable said -WarningAction SilentlyContinue).Count | Should -Be 1
+        $said | Should -BeNullOrEmpty
+        Select-TrexMatch '\N' -Path $logs -WarningVariable walked -WarningAction SilentlyContinue | Out-Null
+        $walked | Should -BeNullOrEmpty
     }
 
     It 'keeps only the walked files a glob matches' {

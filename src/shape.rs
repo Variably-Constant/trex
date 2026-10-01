@@ -169,6 +169,60 @@ impl ShapeField {
         }
         out
     }
+
+    /// [`Self::shape_regions`] with each run reaching back over the periods
+    /// before it that already repeat: a whole period is taken while every
+    /// token's kind equals the kind one period later, or one period earlier
+    /// where the later one lies past the input's end, and the period holds a
+    /// kind other than a word. The kind rather than the whole class, so two
+    /// words of different shapes in one column, `alpha` and `beta`, carry the
+    /// run back; a kind other than a word, since every word is one kind and
+    /// text of words alone repeats at any period. The reader finds a period
+    /// only once its trailing window holds a few repeats, so a run begins rows
+    /// after the repetition does, and at the input's end it may be the last
+    /// row alone. Byte spans with their period, ascending by start.
+    #[must_use]
+    pub fn template_spans(&self) -> Vec<(usize, usize, u16)> {
+        let mut out: Vec<(usize, usize, u16)> = Vec::new();
+        let mut run: Option<(usize, usize, u16)> = None;
+        let n = self.frames.len();
+        let kind = |i: usize| self.frames[i].class >> 16;
+        let repeats = |j: usize, lag: usize| {
+            if j + lag < n {
+                kind(j) == kind(j + lag)
+            } else {
+                j >= lag && kind(j) == kind(j - lag)
+            }
+        };
+        let word = TokenKind::Word.code();
+        let mut close = |(first, last, period): (usize, usize, u16)| {
+            let lag = usize::from(period);
+            let mut first = first;
+            while first > 0 {
+                let j = first - 1;
+                if !repeats(j, lag) || (j..(j + lag).min(n)).all(|i| kind(i) == word) {
+                    break;
+                }
+                first = j;
+            }
+            out.push((self.spans[first].0, self.spans[last].1, period));
+        };
+        for (i, f) in self.frames.iter().enumerate() {
+            if f.period_strength >= self.template_strength && f.period > 0 {
+                match run.as_mut() {
+                    Some(r) => r.1 = i,
+                    None => run = Some((i, i, f.period)),
+                }
+            } else if let Some(r) = run.take() {
+                close(r);
+            }
+        }
+        if let Some(r) = run.take() {
+            close(r);
+        }
+        out.sort_unstable_by_key(|&(s, _, _)| s);
+        out
+    }
 }
 
 /// Analyse a token stream with the default configuration.
@@ -418,22 +472,55 @@ impl RegionKind {
     }
 }
 
+/// Whether an input whose dominant kind is `kind` is kept by the texture
+/// filters `asked`, each a kind's name and whether it keeps (`true`) or
+/// drops (`false`) an input of that kind.
+///
+/// A kind named to drop drops. Where only drops are given every other input
+/// is kept, since the caller asked to remove something rather than to select
+/// something; where any keep is given the keeps are the whole of what passes.
+#[must_use]
+pub fn keeps_texture(asked: &[(String, bool)], kind: Option<RegionKind>) -> bool {
+    let named = |name: &str| kind.is_some_and(|k| k.named(name));
+    if asked.iter().any(|(name, keeps)| !keeps && named(name)) {
+        return false;
+    }
+    match asked.iter().any(|(_, keeps)| *keeps) {
+        true => asked.iter().any(|(name, keeps)| *keeps && named(name)),
+        false => true,
+    }
+}
+
 /// Classify `input` into regions by fusing the spectral region texture with the
-/// shape period: each spectral region that overlaps a strong shape-period
-/// template becomes `Table`, the rest keep their texture. The cross-cutting
-/// consumer of the shape axis - a tabular block is named structurally, where the
-/// byte-period alone reads only "data". `shape` calls `spectral` here (token
-/// grain over byte grain), never the reverse.
+/// shape period: a spectral region more than half of whose bytes lie in
+/// strong shape-period templates, each reaching back over the rows its period
+/// already repeated ([`ShapeField::template_spans`]), becomes `Table` with the
+/// period of the template covering most of it; the rest keep their texture.
+/// The cross-cutting consumer of the shape axis - a tabular block is named
+/// structurally, where the byte-period alone reads only "data". `shape` calls
+/// `spectral` here (token grain over byte grain), never the reverse.
 #[must_use]
 pub fn classified_regions(input: &[u8]) -> Vec<(usize, usize, RegionKind)> {
-    let templates = analyze_bytes(input).shape_regions();
+    let templates = analyze_bytes(input).template_spans();
     crate::spectral::code_regions(input)
         .into_iter()
         .map(|(s, e, tex)| {
-            let period = templates
-                .iter()
-                .find(|&&(ts, te, _)| ts < e && te > s)
-                .map(|&(_, _, p)| p);
+            // The templates' union inside the region, and the one covering most.
+            let mut covered = 0usize;
+            let mut reach = s;
+            let mut widest: Option<(usize, u16)> = None;
+            for &(ts, te, p) in &templates {
+                let (lo, hi) = (ts.max(s), te.min(e));
+                if lo >= hi {
+                    continue;
+                }
+                covered += hi.saturating_sub(lo.max(reach));
+                reach = reach.max(hi);
+                if widest.is_none_or(|(w, _)| hi - lo > w) {
+                    widest = Some((hi - lo, p));
+                }
+            }
+            let period = widest.filter(|_| 2 * covered > e - s).map(|(_, p)| p);
             let kind = match period {
                 Some(p) => RegionKind::Table(p),
                 None => match tex {
@@ -514,6 +601,20 @@ mod tests {
     }
 
     #[test]
+    fn a_texture_filter_keeps_by_name_and_drops_first() {
+        let asked = |list: &[(&str, bool)]| list.iter().map(|(n, k)| ((*n).to_string(), *k)).collect::<Vec<_>>();
+        let table = Some(RegionKind::Table(7));
+        assert!(keeps_texture(&[], None));
+        assert!(keeps_texture(&asked(&[("table", true)]), table));
+        assert!(!keeps_texture(&asked(&[("prose", true)]), table));
+        assert!(!keeps_texture(&asked(&[("prose", true)]), None));
+        assert!(!keeps_texture(&asked(&[("table", false)]), table));
+        assert!(keeps_texture(&asked(&[("blob", false)]), table));
+        assert!(keeps_texture(&asked(&[("blob", false)]), None));
+        assert!(!keeps_texture(&asked(&[("table", true), ("table", false)]), table));
+    }
+
+    #[test]
     fn empty_is_safe() {
         let f = field("");
         assert_eq!(f.n_tokens, 0);
@@ -543,6 +644,31 @@ mod tests {
             regions.iter().any(|&(_, _, k)| matches!(k, RegionKind::Table(_))),
             "ragged CSV should classify as a Table region, got {regions:?}"
         );
+    }
+
+    #[test]
+    fn a_short_template_run_in_prose_is_no_table() {
+        let prose = "# Reading a directory\n\nThe walk reports what it found rather than what it was asked for. A filter that\nsilently drops a file reads exactly the same as a directory that never held one, and\nthe reader cannot tell the two apart afterwards.\n";
+        assert!(
+            !field(prose).shape_regions().is_empty(),
+            "the prose holds a template run, which is what the rule must not take for a table"
+        );
+        assert!(
+            !classified_regions(prose.as_bytes()).iter().any(|&(_, _, k)| matches!(k, RegionKind::Table(_))),
+            "prose with a short template run reads by its texture"
+        );
+        let words = "queue drained\nnothing to report\n";
+        assert!(!classified_regions(words.as_bytes()).iter().any(|&(_, _, k)| matches!(k, RegionKind::Table(_))));
+    }
+
+    #[test]
+    fn a_table_whose_period_is_found_at_its_last_row_is_a_table() {
+        for table in ["alpha 10\nbeta 20\ngamma 300\ndelta 4000\nepsilon 5\n", "alpha 1000B 80ms\nalpha 2000B 80ms\nalpha 4000B 80ms\nbeta 8000B 300ms\n"] {
+            assert!(
+                classified_regions(table.as_bytes()).iter().all(|&(_, _, k)| matches!(k, RegionKind::Table(_))),
+                "{table:?} reads as one table"
+            );
+        }
     }
 
     #[test]

@@ -284,7 +284,7 @@ fn print_usage() {
     println!("    -e P -f FILE      patterns to join as an alternation; a file of them, one a line");
     println!("    -g GLOB -t TYPE   keep walked files by glob (`!` drops) or type; -T drops a type;");
     println!("                      --type-list names the types");
-    println!("    -L --files        the inputs with no match; the files a walk finds, unscanned");
+    println!("    -L --files        the inputs with no match; the files a scan reads, unscanned");
     println!("    --sort KEY        path, modified, accessed or created; --sortr reverses");
     println!("    --color WHEN      always, never, auto, or 16, 256, truecolor; --colors ROLE:fg:COLOR");
     println!("    --stats[=line]    counts and times after the report, in eight lines or one");
@@ -1596,7 +1596,7 @@ fn run_spectral(args: &[String]) -> ExitCode {
             esum += f.entropy;
         }
         let emean = esum / field.frames.len() as f32;
-        println!("  entropy   min {emin:.2}  mean {emean:.2}  max {emax:.2}  (normalised bits/byte)");
+        println!("  entropy   min {emin:.2}  mean {emean:.2}  max {emax:.2}  (normalized bits/byte)");
 
         // Distinct dominant periods, strongest first.
         let mut periods: Vec<(u16, f32)> = Vec::new();
@@ -2515,8 +2515,10 @@ fn run_seam(args: &[String]) -> ExitCode {
         let used_passes = if cfg.passes == 0 { seam::auto_passes(bytes.len()) } else { cfg.passes };
         let field = seam::analyze_with(&bytes, &cfg);
         let rs = seam::recovery(&field.internal_cuts(), &truth, 1);
+        // `--words` sizes the synthetic corpus only.
+        let corpus = if input.is_some() { String::new() } else { format!(" ({words} words)") };
         println!(
-            "trex seam --recover: {} bytes ({words} words), {} true boundaries, order {order}, passes {used_passes}",
+            "trex seam --recover: {} bytes{corpus}, {} true boundaries, order {order}, passes {used_passes}",
             bytes.len(),
             truth.len()
         );

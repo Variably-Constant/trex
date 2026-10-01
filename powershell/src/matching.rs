@@ -15,6 +15,16 @@ use crate::pattern::{Compiled, Engine, TrexMatch, explanation_of, pattern_arg};
 use crate::query::record_unit;
 use crate::structure::{RegionKind, region_kind};
 
+/// The paths `paths` name, a wildcard expanded by the provider first unless
+/// `literal`: each a file or a directory as given, before any walk.
+pub(crate) fn resolved(ps: &Pipeline<'_>, paths: &[String], literal: bool) -> PsResult<Vec<String>> {
+    let mut out = Vec::new();
+    for given in paths {
+        out.extend(ps.resolve_path(given, literal)?);
+    }
+    Ok(out)
+}
+
 /// The files `paths` name: a file as itself, a directory walked under
 /// `opts`, a wildcard expanded by the provider first unless `literal`.
 pub(crate) fn files_of(
@@ -23,11 +33,7 @@ pub(crate) fn files_of(
     literal: bool,
     opts: &trex::files::WalkOptions,
 ) -> PsResult<Vec<trex::files::Source>> {
-    let mut resolved = Vec::new();
-    for given in paths {
-        resolved.extend(ps.resolve_path(given, literal)?);
-    }
-    let (sources, errors) = trex::files::collect(&resolved, opts);
+    let (sources, errors) = trex::files::collect(&resolved(ps, paths, literal)?, opts);
     for e in errors {
         ps.write_error(&PsError::new(ErrorCategory::ReadError, "TrexWalk", e))?;
     }
@@ -664,7 +670,9 @@ fn records_touched(
 /// each string as an input of its own. -Path reads each file whole and scans
 /// it in one call, so a large input crosses into trex once per file; a
 /// directory is walked with .gitignore and .ignore rules, skipping hidden and
-/// binary files, as the trex command walks one.
+/// binary files, as the trex command walks one. A file named outright that
+/// holds a NUL byte is left unread and named in a warning, unless -Binary
+/// asks for it.
 ///
 /// -Context adds the lines around each match, or the rest of the paragraph,
 /// block or other record a unit names; -NotMatch writes the lines no match
@@ -1863,10 +1871,8 @@ impl Cmdlet for SelectTrexMatch {
             sort: self.sort.map(|k| trex::files::Sort { key: k.key(), reverse: self.descending }),
         };
         opts.check().map_err(|e| arg_err("TrexWalk", e))?;
-        let mut named: Vec<std::path::PathBuf> = Vec::new();
-        for g in &given {
-            named.extend(ps.resolve_path(g, literal)?.into_iter().map(std::path::PathBuf::from));
-        }
+        let named: Vec<std::path::PathBuf> =
+            resolved(ps, &given, literal)?.into_iter().map(std::path::PathBuf::from).collect();
         let trees: Vec<std::path::PathBuf> = named.iter().filter(|p| p.is_dir()).cloned().collect();
         // As the trex command decides whether a report names its inputs: a
         // directory, several paths, or paths piped in one at a time do, and a
@@ -1913,7 +1919,14 @@ impl Cmdlet for SelectTrexMatch {
             let placed = self.follow || !self.written.summarizes();
             let read = match crate::window::read_file(&path, self.window, &unit, self.binary, placed) {
                 Ok(Some(read)) => read,
-                Ok(None) => continue,
+                // A file named outright that holds a NUL byte is named in a
+                // warning, as Get-TrexLine names one; a walk passes over one.
+                Ok(None) => {
+                    if !walked {
+                        ps.warning(&crate::common::binary_notice(&path.display().to_string()))?;
+                    }
+                    continue;
+                }
                 Err(e) => {
                     ps.write_error(&e)?;
                     continue;

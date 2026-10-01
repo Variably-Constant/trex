@@ -15,12 +15,35 @@
 
 use std::path::{Path, PathBuf};
 
-/// One example: where it is, the command's words, and the output shown.
+/// One example: where it is, the command's words, the output shown, and
+/// the standard input a `$ printf 'TEXT' | trex ...` line feeds it.
 struct Example {
     file: PathBuf,
     line: usize,
     words: Vec<String>,
     shown: Vec<String>,
+    stdin: Option<String>,
+}
+
+/// The bytes `printf FORMAT` writes, for a format holding no conversion:
+/// `\n`, `\t` and `\\` are a newline, a tab and a backslash. `None` for any
+/// other escape or a `%`, which this does not read.
+fn printf_text(format: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = format.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next()? {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                '\\' => out.push('\\'),
+                _ => return None,
+            },
+            '%' => return None,
+            c => out.push(c),
+        }
+    }
+    Some(out)
 }
 
 /// A file a documented example reads, as a `$ cat NAME` block shows it: the
@@ -161,6 +184,7 @@ fn examples_in(path: &Path) -> (Vec<Example>, Vec<Fixture>, Vec<String>) {
                         line: at,
                         words,
                         shown: Vec::new(),
+                        stdin: None,
                     });
                 }
                 None => pending = Some((at, cmd)),
@@ -171,10 +195,39 @@ fn examples_in(path: &Path) -> (Vec<Example>, Vec<Fixture>, Vec<String>) {
             close(&mut out, &mut files, &mut current, &mut shown_file);
             match shell_words(cmd) {
                 Some(words) => {
-                    current =
-                        Some(Example { file: path.to_path_buf(), line: i + 1, words, shown: Vec::new() });
+                    current = Some(Example {
+                        file: path.to_path_buf(),
+                        line: i + 1,
+                        words,
+                        shown: Vec::new(),
+                        stdin: None,
+                    });
                 }
                 None => pending = Some((i + 1, cmd.to_string())),
+            }
+        } else if let Some(cmd) = line.strip_prefix("$ printf ") {
+            close(&mut out, &mut files, &mut current, &mut shown_file);
+            // `printf 'TEXT' | trex ARGS`: the binary run on ARGS with TEXT on
+            // its standard input. A line of any other shape is one nothing
+            // here runs, and is reported with the lines that could not be
+            // split rather than passing unchecked.
+            let piped = shell_words(cmd).and_then(|words| match words.as_slice() {
+                [format, bar, trex, rest @ ..] if bar == "|" && trex == "trex" => {
+                    printf_text(format).map(|text| (rest.to_vec(), text))
+                }
+                _ => None,
+            });
+            match piped {
+                Some((words, text)) => {
+                    current = Some(Example {
+                        file: path.to_path_buf(),
+                        line: i + 1,
+                        words,
+                        shown: Vec::new(),
+                        stdin: Some(text),
+                    });
+                }
+                None => unsplit.push(format!("{}:{}: $ printf {cmd}", path.display(), i + 1)),
             }
         } else if let Some(name) = line.strip_prefix("$ cat ") {
             close(&mut out, &mut files, &mut current, &mut shown_file);
@@ -495,13 +548,28 @@ fn run(ex: &Example, dir: &Path, sink: &Path) -> Result<Vec<String>, String> {
     };
     let file = std::fs::File::create(sink).map_err(|e| format!("create {}: {e}", sink.display()))?;
     let also = file.try_clone().map_err(|e| format!("a second handle on the sink: {e}"))?;
-    std::process::Command::new(env!("CARGO_BIN_EXE_trex"))
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_trex"));
+    command
         .args(words)
         .current_dir(dir)
         .stdout(std::process::Stdio::from(file))
-        .stderr(std::process::Stdio::from(also))
-        .status()
-        .map_err(|e| format!("launching the binary: {e}"))?;
+        .stderr(std::process::Stdio::from(also));
+    match &ex.stdin {
+        None => {
+            command.status().map_err(|e| format!("launching the binary: {e}"))?;
+        }
+        Some(text) => {
+            let mut child = command
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("launching the binary: {e}"))?;
+            let mut input = child.stdin.take().expect("a piped standard input");
+            std::io::Write::write_all(&mut input, text.as_bytes())
+                .map_err(|e| format!("writing the standard input: {e}"))?;
+            drop(input);
+            child.wait().map_err(|e| format!("waiting for the binary: {e}"))?;
+        }
+    }
     let raw = std::fs::read(sink).map_err(|e| format!("read {}: {e}", sink.display()))?;
     let text = String::from_utf8_lossy(&raw).into_owned();
     // A library's own diagnostic is not the binary's answer to the block.
@@ -613,6 +681,33 @@ fn an_elision_stands_for_a_run_of_lines_and_nothing_else_is_loosened() {
         &[line("a"), line("... x ..."), line("b")],
         &[line("a"), line("b"), line("q"), line("b")]
     ));
+}
+
+/// Every README and wiki page holding a `rust` block is compiled as doctests
+/// through a `#[doc = include_str!(..)]` in src/lib.rs, so a Rust example is
+/// held to the crate as a console example is held to the binary.
+#[test]
+fn every_page_with_a_rust_block_is_compiled_as_doctests() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lib = std::fs::read_to_string(root.join("src").join("lib.rs"))
+        .unwrap_or_else(|e| panic!("read src/lib.rs: {e}"));
+    let mut files = vec![root.join("README.md")];
+    markdown_under(&root.join("wiki").join("content"), &mut files);
+    let mut pages = 0usize;
+    let mut missing = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("read {}: {e}", file.display()));
+        if !text.lines().any(|l| l.starts_with("```rust")) {
+            continue;
+        }
+        pages += 1;
+        let rel = file.strip_prefix(root).expect("every page is under the crate").to_string_lossy().replace('\\', "/");
+        if !lib.contains(&format!("include_str!(\"../{rel}\")")) {
+            missing.push(rel);
+        }
+    }
+    assert!(pages > 0, "the documentation holds rust blocks");
+    assert!(missing.is_empty(), "pages whose rust blocks no doctest compiles:\n{}", missing.join("\n"));
 }
 
 #[test]

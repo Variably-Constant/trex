@@ -17,17 +17,16 @@ keywords = ["regex", "tokens", "pattern-matching", "text-search", "log-parsing"]
 categories = ["text-processing", "command-line-utilities", "parsing"]
 # What the default build and the doctests read: the source, the CUDA kernels
 # build.rs bakes, the prior corpus the device coder compiles in, and the wiki
-# pages compiled as doctests. The 21.6 MB baked prior is left out, which puts
-# the crate under crates.io's size limit; it is compiled in only by the
-# `compress` feature, which therefore builds from the repository alone.
+# reference pages, which src/lib.rs compiles as doctests. The 21.6 MB baked
+# prior is left out, which puts the crate under crates.io's size limit; it is
+# compiled in only by the `compress` feature, which therefore builds from the
+# repository alone.
 include = [
     "/src/**/*",
     "/build.rs",
     "/kernels/*.cu",
     "/_corpus/prior_en.txt",
-    "/wiki/content/docs/reference/library-api.md",
-    "/wiki/content/docs/reference/axes/context.md",
-    "/wiki/content/docs/reference/axes/shape.md",
+    "/wiki/content/docs/reference/**/*.md",
     "/README.md",
     "/CHANGELOG.md",
     "/LICENSE-MIT",

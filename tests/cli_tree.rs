@@ -206,6 +206,34 @@ fn a_binary_file_named_outright_is_refused_without_the_flag() {
 }
 
 #[test]
+fn an_edit_of_one_named_binary_file_is_refused_and_a_walk_passes_over_one() {
+    let t = sample_tree("binary-edit");
+    let blob = t.path().join("blob.bin").to_string_lossy().into_owned();
+    for (args, verb) in [
+        (vec!["rewrite", "\\N", "[${0}]", blob.as_str(), "--dry-run"], "rewrites"),
+        (vec!["rewrite", "\\N", "[${0}]", blob.as_str(), "--in-place"], "rewrites"),
+        (vec!["redact", "\\N", blob.as_str(), "--dry-run"], "redacts"),
+        (vec!["rewrite", "\\N", "[${0}]", blob.as_str(), "--interactive"], "rewrites"),
+    ] {
+        let out = trex_with_stdin(&args, b"");
+        assert!(!out.status.success(), "{args:?}");
+        let notice = format!("blob.bin holds a NUL byte and is binary; --binary {verb} it");
+        assert!(stderr(&out).contains(&notice), "{args:?}: {}", stderr(&out));
+        assert_eq!(stdout(&out), "", "{args:?}");
+    }
+    assert_eq!(t.read("blob.bin"), b"seven 7000\0", "a refused file is left alone");
+
+    let out = trex(&["rewrite", "\\N", "[${0}]", &blob, "--dry-run", "--binary"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(stdout(&out).contains("+seven [7000]"), "{}", stdout(&out));
+
+    let root = t.path().to_string_lossy().into_owned();
+    let out = trex(&["rewrite", "\\N{>=1000000}", "[${0}]", &root, "--dry-run"]);
+    assert!(out.status.success(), "a walk passes over a binary file: {}", stderr(&out));
+    assert!(!stderr(&out).contains("binary"), "{}", stderr(&out));
+}
+
+#[test]
 fn a_dry_run_prints_the_diff_and_an_in_place_run_writes_every_file() {
     let t = sample_tree("rewrite");
     let root = t.path().to_string_lossy().into_owned();

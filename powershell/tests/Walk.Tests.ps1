@@ -28,6 +28,17 @@ Describe 'Get-TrexFile' {
         Get-TrexFile $tree -Hidden | Get-Leaf | Should -Contain 'kept.txt'
     }
 
+    It 'leaves a binary file out, named or found, as a scan leaves it unread, unless -Binary asks for it' {
+        $mixed = Join-Path $TestDrive 'mixed'
+        New-Item -ItemType Directory -Path $mixed | Out-Null
+        Write-TrexTestFile -Path (Join-Path $mixed 'a.txt') -Text "hello`n"
+        [System.IO.File]::WriteAllBytes((Join-Path $mixed 'b.bin'), [byte[]](0x61, 0x62, 0x00, 0x63))
+        Get-TrexFile $mixed | Get-Leaf | Should -Be 'a.txt'
+        Get-TrexFile $mixed -Binary | Get-Leaf | Should -Be @('a.txt', 'b.bin')
+        Get-TrexFile (Join-Path $mixed 'b.bin') | Should -BeNullOrEmpty
+        Get-TrexFile (Join-Path $mixed 'b.bin') -Binary | Get-Leaf | Should -Be 'b.bin'
+    }
+
     It 'keeps the walked files of a type or a glob, and a file named outright whatever they say' {
         Get-TrexFile $tree -FileType rust | Get-Leaf | Should -Be 'main.rs'
         Get-TrexFile $tree -Include '*.md' | Get-Leaf | Should -Be 'notes.md'

@@ -106,9 +106,11 @@ pub struct TrexAtomTest {
 /// Where one declaration came from.
 #[derive(Clone, Debug)]
 enum Source {
-    /// One line made here: its name, its form, and the declaration text,
-    /// which holds its `test` line too when it has expectations.
-    Line { name: String, form: AtomForm, definition: String, text: String },
+    /// One line made here: its name, its form, the declaration text, which
+    /// holds its `test` line too when it has expectations, and the
+    /// directory a relative `@file` in it is read from, the PowerShell
+    /// location it was declared at, or none for the process's directory.
+    Line { name: String, form: AtomForm, definition: String, text: String, base: Option<PathBuf> },
     /// A pattern file, declared whole with a relative `@file` set in it read
     /// from beside it.
     File(PathBuf),
@@ -131,7 +133,12 @@ impl Declarations {
         let mut set = trex::ShapeSet::new();
         for source in sources {
             match source {
-                Source::Line { text, .. } => set.declare_text(text).map_err(|e| shape_err(&e))?,
+                Source::Line { text, base, .. } => {
+                    set.set_base_dir(base.clone());
+                    let declared = set.declare_text(text);
+                    set.set_base_dir(None);
+                    declared.map_err(|e| shape_err(&e))?;
+                }
                 Source::File(path) => set.declare_file(path).map_err(|e| shape_err(&e))?,
             }
         }
@@ -157,9 +164,18 @@ impl Declarations {
         self.sources.iter().filter(|s| !matches!(s, Source::Line { name: n, .. } if n == name)).cloned().collect()
     }
 
-    /// Declare one line, replacing a line of the same name when `force` is
-    /// set and refusing it otherwise.
-    fn add_line(&mut self, name: &str, form: AtomForm, definition: &str, text: String, force: bool) -> PsResult<()> {
+    /// Declare one line, a relative `@file` in it read from `base`,
+    /// replacing a line of the same name when `force` is set and refusing it
+    /// otherwise.
+    fn add_line(
+        &mut self,
+        name: &str,
+        form: AtomForm,
+        definition: &str,
+        text: String,
+        base: Option<PathBuf>,
+        force: bool,
+    ) -> PsResult<()> {
         if self.declares_line(name) && !force {
             return Err(arg_err(
                 "TrexAtomExists",
@@ -167,7 +183,7 @@ impl Declarations {
             ));
         }
         let mut next = self.without_line(name);
-        next.push(Source::Line { name: name.to_string(), form, definition: definition.to_string(), text });
+        next.push(Source::Line { name: name.to_string(), form, definition: definition.to_string(), text, base });
         self.commit(next)
     }
 
@@ -325,9 +341,21 @@ fn session(ps: &Pipeline<'_>) -> PsResult<PsProxy<TrexLibrary>> {
     if let Some(held) = session_if_any(ps)? {
         return Ok(held);
     }
-    let made = TrexLibrary::new()?.into_ps()?;
+    let made = TrexLibrary::of(Declarations::default(), Some(location(ps)?))?.into_ps()?;
     ps.set_variable(SESSION_VARIABLE, &made)?;
     PsProxy::from_ps(&made)
+}
+
+/// PowerShell's current filesystem location, which a relative `@file` in a
+/// pattern is read from, as a relative `-Path` is. It is the filesystem's
+/// even where the current location is another provider's.
+pub(crate) fn location(ps: &Pipeline<'_>) -> PsResult<PathBuf> {
+    let context = ps.variable("ExecutionContext")?;
+    let state = pwrs::object::property(&context, "SessionState")?;
+    let paths = pwrs::object::property(&state, "Path")?;
+    let here = pwrs::object::property(&paths, "CurrentFileSystemLocation")?;
+    let provider_path = pwrs::object::property(&here, "ProviderPath")?;
+    Ok(PathBuf::from(String::from_ps(&provider_path)?))
 }
 
 /// The atoms a call reads with `files` imported for that call alone: a file
@@ -348,18 +376,24 @@ pub(crate) fn atoms_with_files(
     if !files.is_empty() {
         decls.add_files(files.to_vec())?;
     }
-    Ok(decls.set)
+    let mut set = decls.set;
+    set.set_base_dir(Some(location(ps)?));
+    Ok(set)
 }
 
-/// The atoms a call reads: the library it was given, or else the session's.
+/// The atoms a call reads: the library it was given, or else the session's,
+/// a relative `@file` in a pattern compiled against them read from
+/// PowerShell's current location.
 pub(crate) fn atoms_for(ps: &Pipeline<'_>, library: &Option<PsProxy<TrexLibrary>>) -> PsResult<trex::ShapeSet> {
-    match library {
-        Some(lib) => lib.with(|l| l.decls.set().clone()),
+    let mut set = match library {
+        Some(lib) => lib.with(|l| l.decls.set().clone())?,
         None => match session_if_any(ps)? {
-            Some(held) => held.with(|l| l.decls.set().clone()),
-            None => Ok(trex::ShapeSet::new()),
+            Some(held) => held.with(|l| l.decls.set().clone())?,
+            None => trex::ShapeSet::new(),
         },
-    }
+    };
+    set.set_base_dir(Some(location(ps)?));
+    Ok(set)
 }
 
 /// A set of atoms held in an object rather than the session, passed to a
@@ -372,11 +406,16 @@ pub struct TrexLibrary {
     pub files: Vec<String>,
     #[psfield(skip)]
     pub(crate) decls: Declarations,
+    /// The PowerShell location the library was made at, which a relative
+    /// `@file` in a line its `Declare` method takes is read from; none for
+    /// a library made with no PowerShell location to read.
+    #[psfield(skip)]
+    base: Option<PathBuf>,
 }
 
 impl TrexLibrary {
-    fn of(decls: Declarations) -> PsResult<Self> {
-        let mut lib = TrexLibrary { names: Vec::new(), files: Vec::new(), decls };
+    fn of(decls: Declarations, base: Option<PathBuf>) -> PsResult<Self> {
+        let mut lib = TrexLibrary { names: Vec::new(), files: Vec::new(), decls, base };
         lib.refresh()?;
         Ok(lib)
     }
@@ -392,22 +431,24 @@ impl TrexLibrary {
 impl TrexLibrary {
     /// An empty library.
     pub fn new() -> PsResult<Self> {
-        TrexLibrary::of(Declarations::default())
+        TrexLibrary::of(Declarations::default(), None)
     }
 
     /// Declares one line as a pattern file writes it: `shape name =
     /// \`bytes\``, `kind name = pattern`, `let name = pattern`, or a `test`
-    /// line.
+    /// line. A relative `@file` in it is read from the location the library
+    /// was made at.
     pub fn declare(&mut self, line: String) -> PsResult<()> {
         let mut next = self.decls.sources.clone();
-        next.push(line_source(&line)?);
+        next.push(line_source(&line, self.base.clone())?);
         self.decls.commit(next)?;
         self.refresh()
     }
 }
 
-/// A declaration line as a source, its name and form read from it.
-fn line_source(line: &str) -> PsResult<Source> {
+/// A declaration line as a source, its name and form read from it, a
+/// relative `@file` in it read from `base`.
+fn line_source(line: &str, base: Option<PathBuf>) -> PsResult<Source> {
     let trimmed = line.trim();
     one_line("a declaration", trimmed)?;
     let (keyword, rest) = trimmed.split_once(char::is_whitespace).unwrap_or((trimmed, ""));
@@ -420,6 +461,7 @@ fn line_source(line: &str) -> PsResult<Source> {
                 form: AtomForm::Pattern,
                 definition: String::new(),
                 text: trimmed.to_string(),
+                base,
             });
         }
         (other, None) => {
@@ -429,7 +471,7 @@ fn line_source(line: &str) -> PsResult<Source> {
             ));
         }
     };
-    Ok(Source::Line { name, form, definition, text: trimmed.to_string() })
+    Ok(Source::Line { name, form, definition, text: trimmed.to_string(), base })
 }
 
 /// `s` as a double-quoted text of a `test` line, which reads `\"`, `\\`,
@@ -575,17 +617,18 @@ impl Cmdlet for RegisterTrexAtom {
             text.push('\n');
             text.push_str(&test);
         }
+        let here = Some(location(ps)?);
         let place = match &self.library {
             Some(lib) => {
                 lib.with_mut(|l| -> PsResult<()> {
-                    l.decls.add_line(&self.name, form, &definition, text, self.force)?;
+                    l.decls.add_line(&self.name, form, &definition, text, here, self.force)?;
                     l.refresh()
                 })??;
                 "library"
             }
             None => {
                 session(ps)?.with_mut(|l| -> PsResult<()> {
-                    l.decls.add_line(&self.name, form, &definition, text, self.force)?;
+                    l.decls.add_line(&self.name, form, &definition, text, here, self.force)?;
                     l.refresh()
                 })??;
                 "session"
@@ -918,10 +961,11 @@ impl Cmdlet for NewTrexLibrary {
                 sources.push(Source::File(PathBuf::from(resolved)));
             }
         }
+        let here = location(ps)?;
         for line in &self.declaration {
-            sources.push(line_source(line)?);
+            sources.push(line_source(line, Some(here.clone()))?);
         }
         decls.commit(sources)?;
-        ps.write(TrexLibrary::of(decls)?)
+        ps.write(TrexLibrary::of(decls, Some(here))?)
     }
 }

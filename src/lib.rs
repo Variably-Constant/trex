@@ -4,8 +4,10 @@
 //! typed tokens rather than raw bytes. A structure-aware lexer
 //! turns input into a stream of typed atoms (numbers, words,
 //! quoted strings, IPs, balanced bracket groups, punctuation),
-//! and patterns are matched over that stream by an Antimirov
-//! partial-derivative engine carrying a register environment.
+//! and patterns are matched over that stream by a single-pass
+//! engine, with a set-reachability engine (the operational form of
+//! the Antimirov partial derivative) for the constructs it routes
+//! away; both carry a register environment.
 //!
 //! The result is a one-line, regex-terse surface that expresses
 //! three things regular expressions cannot:
@@ -22,12 +24,11 @@
 //!
 //! ## Dual-grain scanning
 //!
-//! Tokens are spans of bytes. trex runs two co-operating grains
-//! over the same input at once: a token-grain engine that owns
-//! structure (binding, balance, valency) and a byte-grain engine
-//! that owns literal speed and sub-token detail. The two grains
-//! are complementary, not redundant: each answers a different
-//! question about the same bytes, and their results join. See
+//! Tokens are spans of bytes, so a scan has two stages over the
+//! same input: the byte grain lexes the bytes into tokens and the
+//! token grain matches the pattern over them. [`scan_dual_grain`]
+//! runs the two on two threads as a producer and a consumer and
+//! returns the matches [`scan`] returns. See
 //! `wiki/content/docs/explanation/architecture.md` for the architecture.
 
 // Crate-wide: no unsafe, with two deliberate exceptions, both under the
@@ -199,31 +200,238 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-// The wiki pages whose Rust blocks describe this crate's API, compiled as
-// doctests so they cannot drift from it.
+// The wiki pages that hold Rust examples, each compiled as doctests.
 //
-// rustdoc already compiles a fenced rust block in a doc comment, and
-// `#[doc = include_str!(..)]` points it at a file, so a page becomes a set of
+// rustdoc compiles and runs a fenced rust block in a doc comment, and
+// `#[doc = include_str!(..)]` points one at a file, so a page becomes a set of
 // doctests with no extractor and no second build system. `cfg(doctest)` keeps
-// the modules out of every other build, so this costs a test run and nothing
-// else. The pages' front matter is inert: rustdoc renders it as text and
-// compiles none of it.
-//
-// A block here is a claim about the API that nothing was checking. That is not
-// hypothetical - the reference described a match's captures as a type it has
-// never been - and an example a reader copies is worth less than nothing when
-// it does not build.
+// the modules out of every other build. A page's front matter, shortcodes and
+// other fences are inert: rustdoc renders them as text and compiles none of
+// them. tests/wiki_examples.rs fails when a page holding a rust block is not
+// named here.
 #[cfg(doctest)]
-#[doc = include_str!("../wiki/content/docs/reference/library-api.md")]
-mod wiki_library_api {}
+#[doc = include_str!("../wiki/content/docs/reference/pattern-syntax.md")]
+mod wiki_pattern_syntax {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/matching.md")]
+mod wiki_matching {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/windows.md")]
+mod wiki_windows {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/rewriting.md")]
+mod wiki_rewriting {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/redaction.md")]
+mod wiki_redaction {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/aggregates.md")]
+mod wiki_aggregates {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/records.md")]
+mod wiki_records {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/building-patterns.md")]
+mod wiki_building_patterns {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/pattern-files.md")]
+mod wiki_pattern_files {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/tools.md")]
+mod wiki_tools {}
 
 #[cfg(doctest)]
 #[doc = include_str!("../wiki/content/docs/reference/axes/context.md")]
 mod wiki_axis_context {}
 
 #[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/axes/magnitude.md")]
+mod wiki_axis_magnitude {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/axes/stress.md")]
+mod wiki_axis_stress {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/axes/flow.md")]
+mod wiki_axis_flow {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/axes/observation.md")]
+mod wiki_axis_observation {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/axes/echo.md")]
+mod wiki_axis_echo {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/axes/orbit.md")]
+mod wiki_axis_orbit {}
+
+#[cfg(doctest)]
 #[doc = include_str!("../wiki/content/docs/reference/axes/shape.md")]
 mod wiki_axis_shape {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/axes/spectral.md")]
+mod wiki_axis_spectral {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/axes/seam.md")]
+mod wiki_axis_seam {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/reference/axes/relation.md")]
+mod wiki_axis_relation {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/extract-fields.md")]
+mod wiki_howto_extract_fields {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/rename-matches.md")]
+mod wiki_howto_rename_matches {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/find-tables.md")]
+mod wiki_howto_find_tables {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/match-up-to-a-symmetry.md")]
+mod wiki_howto_match_up_to_a_symmetry {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/segment-without-delimiters.md")]
+mod wiki_howto_segment_without_delimiters {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/find-outliers.md")]
+mod wiki_howto_find_outliers {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/choose-a-backend.md")]
+mod wiki_howto_choose_a_backend {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/declare-your-own-atoms.md")]
+mod wiki_howto_declare_your_own_atoms {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/build-and-reuse-a-pattern.md")]
+mod wiki_howto_build_and_reuse_a_pattern {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/query-records.md")]
+mod wiki_howto_query_records {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/count-and-rank-matches.md")]
+mod wiki_howto_count_and_rank_matches {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/redact-and-follow-logs.md")]
+mod wiki_howto_redact_and_follow_logs {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/search-a-tree-of-files.md")]
+mod wiki_howto_search_a_tree_of_files {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/index-a-tree.md")]
+mod wiki_howto_index_a_tree {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/lint-with-rules.md")]
+mod wiki_howto_lint_with_rules {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/test-a-pattern-file.md")]
+mod wiki_howto_test_a_pattern_file {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/filter-by-typed-values.md")]
+mod wiki_howto_filter_by_typed_values {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/scan-many-patterns-at-once.md")]
+mod wiki_howto_scan_many_patterns_at_once {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/explain-why-a-pattern-matched.md")]
+mod wiki_howto_explain_why_a_pattern_matched {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/match-inside-encoded-content.md")]
+mod wiki_howto_match_inside_encoded_content {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/summarize-a-log-by-templates.md")]
+mod wiki_howto_summarize_a_log_by_templates {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/scan-input-in-pieces.md")]
+mod wiki_howto_scan_input_in_pieces {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/parse-with-a-token-grammar.md")]
+mod wiki_howto_parse_with_a_token_grammar {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/split-run-together-words.md")]
+mod wiki_howto_split_run_together_words {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/learn-a-subword-tokenizer.md")]
+mod wiki_howto_learn_a_subword_tokenizer {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/find-deep-nesting.md")]
+mod wiki_howto_find_deep_nesting {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/find-repeated-or-new-content.md")]
+mod wiki_howto_find_repeated_or_new_content {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/find-rare-lines-and-out-of-order-times.md")]
+mod wiki_howto_find_rare_lines_and_out_of_order_times {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/find-where-text-changes-kind.md")]
+mod wiki_howto_find_where_text_changes_kind {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/how-to/pre-check-a-corpus-for-a-literal.md")]
+mod wiki_howto_pre_check_a_corpus_for_a_literal {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/tutorial/getting-started.md")]
+mod wiki_tutorial_getting_started {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/tutorial/first-patterns.md")]
+mod wiki_tutorial_first_patterns {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/tutorial/binding-and-balance.md")]
+mod wiki_tutorial_binding_and_balance {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/tutorial/axes-and-tools.md")]
+mod wiki_tutorial_axes_and_tools {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../wiki/content/docs/tutorial/beyond-regex.md")]
+mod wiki_tutorial_beyond_regex {}
 
 #[cfg(test)]
 mod tests {

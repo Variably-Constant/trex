@@ -159,6 +159,51 @@ Describe 'Libraries' {
     }
 }
 
+Describe 'Files a pattern names' {
+    BeforeAll {
+        $here = Join-Path $TestDrive 'here'
+        $elsewhere = Join-Path $TestDrive 'elsewhere'
+        New-Item -ItemType Directory -Path $here, $elsewhere | Out-Null
+        Write-TrexTestFile -Path (Join-Path $here 'cidrs.txt') -Text "10.0.0.0/8`n" -Encoding Utf8
+        Write-TrexTestFile -Path (Join-Path $here 'billing.log') -Text "billing c91d ok`n" -Encoding Utf8
+    }
+
+    BeforeEach {
+        Unregister-TrexAtom -All
+    }
+
+    It 'reads a relative @file from the PowerShell location, not the process directory' {
+        [System.Environment]::CurrentDirectory | Should -Not -Be $here
+        Push-Location -LiteralPath $here
+        try {
+            Select-TrexMatch '\I{in:@cidrs.txt}' -InputObject 'from 10.4.5.6 and 8.8.8.8' -Raw | Should -BeExactly '10.4.5.6'
+            Select-TrexMatch '@echoed:@billing.log \W' -InputObject 'req fa3b; req c91d' -Raw | Should -BeExactly 'c91d'
+            (New-TrexPattern '\I{in:@cidrs.txt}').FindAll('8.8.8.8 10.1.1.1').Text | Should -BeExactly '10.1.1.1'
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'reads a declared line''s @file from where it was declared, wherever the session stands later' {
+        Push-Location -LiteralPath $here
+        try {
+            Register-TrexAtom lan -Pattern '\I{in:@cidrs.txt}'
+            $lib = New-TrexLibrary -Declaration 'let lan = \I{in:@cidrs.txt}'
+        } finally {
+            Pop-Location
+        }
+        Push-Location -LiteralPath $elsewhere
+        try {
+            Register-TrexAtom other -Pattern '\N'
+            Select-TrexMatch '\{lan}' -InputObject 'from 10.4.5.6 and 8.8.8.8' -Raw | Should -BeExactly '10.4.5.6'
+            $lib.Declare('let lan2 = \I{in:@cidrs.txt}')
+            Select-TrexMatch '\{lan2}' -InputObject 'from 10.4.5.6 and 8.8.8.8' -Library $lib -Raw | Should -BeExactly '10.4.5.6'
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
 Describe 'Shipped atoms' {
     It 'lists the library trex ships' {
         @(Get-TrexAtom -Shipped).Count | Should -Be 75

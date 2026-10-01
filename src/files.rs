@@ -294,6 +294,43 @@ pub fn is_binary(bytes: &[u8]) -> bool {
     !has_bom(bytes) && bytes.contains(&0)
 }
 
+/// Whether the file at `path` is binary as [`is_binary`] reads its bytes,
+/// read no further than its first NUL byte.
+///
+/// # Errors
+///
+/// The file cannot be opened or read.
+pub fn is_binary_file(path: &Path) -> std::io::Result<bool> {
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; 64 * 1024];
+    // The first four bytes are read before anything is decided, since they
+    // hold the byte order mark where there is one.
+    let mut head = 0;
+    while head < 4 {
+        match file.read(&mut buf[head..]) {
+            Ok(0) => break,
+            Ok(n) => head += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    if has_bom(&buf[..head]) {
+        return Ok(false);
+    }
+    if buf[..head].contains(&0) {
+        return Ok(true);
+    }
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => return Ok(false),
+            Ok(n) if buf[..n].contains(&0) => return Ok(true),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// The byte offset each line of an input begins at, for turning a match
 /// offset into a line and a column.
 ///
@@ -797,5 +834,30 @@ mod tests {
         assert_eq!(named.len(), 2);
         assert_eq!(named[1], Source::Stdin);
         std::fs::remove_dir_all(&root).expect("the test tree is removed");
+    }
+
+    #[test]
+    fn a_file_is_binary_exactly_when_its_bytes_are() {
+        let root = std::env::temp_dir().join(format!("trex/binary-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("the test's directory is made");
+        // A NUL past the first read, so the check reads on past it.
+        let mut late = vec![b'a'; 200_000];
+        late.push(0);
+        let cases: [(&str, Vec<u8>); 7] = [
+            ("empty", Vec::new()),
+            ("short", b"ab".to_vec()),
+            ("zero", b"\0".to_vec()),
+            ("text", b"hello world\n".to_vec()),
+            ("late", late),
+            ("utf16", vec![0xFF, 0xFE, b'a', 0, b'b', 0]),
+            ("utf32", vec![0, 0, 0xFE, 0xFF, 0, 0, 0, b'a']),
+        ];
+        for (name, bytes) in &cases {
+            let p = root.join(name);
+            std::fs::write(&p, bytes).expect("the test's file is written");
+            assert_eq!(is_binary_file(&p).expect("a readable file"), is_binary(bytes), "{name}");
+        }
+        assert!(is_binary_file(&root.join("absent")).is_err());
+        std::fs::remove_dir_all(&root).expect("the test's directory is removed");
     }
 }

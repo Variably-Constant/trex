@@ -1,4 +1,4 @@
-//! CPU + GPU tandem dispatch (optional `tandem` feature).
+//! CPU + GPU tandem dispatch (the default `tandem` feature, which implies `gpu`).
 //!
 //! A batch of inputs is split across the device and the cores and
 //! scanned at the same time. Each input is scanned independently, so the

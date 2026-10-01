@@ -50,11 +50,12 @@ pub(crate) struct Compiled {
 }
 
 impl Compiled {
-    /// `source` compiled against `shapes`. With nothing declared this is
-    /// the plain parse; with anything declared it is the parse `--lib`
-    /// makes, so a pattern reads alike on the command line and here.
+    /// `source` compiled against `shapes`. With nothing declared and no
+    /// directory to read a relative `@file` from this is the plain parse;
+    /// otherwise it is the parse `--lib` makes, so a pattern reads alike on
+    /// the command line and here.
     pub(crate) fn new(source: &str, shapes: trex::ShapeSet) -> PsResult<Self> {
-        let declares = !shapes.is_empty() || !shapes.lets().is_empty();
+        let declares = !shapes.is_empty() || !shapes.lets().is_empty() || shapes.base_dir().is_some();
         let inner = if declares {
             trex::parser::parse_with_shapes(source, &shapes).map_err(|e| parse_err(source, &e))?
         } else {

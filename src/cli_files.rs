@@ -1519,23 +1519,6 @@ fn texture_of(src: &Source) -> Option<trex::shape::RegionKind> {
     trex::shape::dominant_kind(&trex::encoding::decode(raw))
 }
 
-/// Whether a file of `kind` is kept by the `--texture` flags given.
-///
-/// A kind named plainly keeps, and one named with `!` drops. Where only drops
-/// are given every other file is kept, since the reader asked to remove
-/// something rather than to select something; where any keep is given the
-/// keeps are the whole of what passes.
-fn keeps_texture(asked: &[(String, bool)], kind: Option<trex::shape::RegionKind>) -> bool {
-    let named = |name: &str| kind.is_some_and(|k| k.named(name));
-    if asked.iter().any(|(name, keeps)| !keeps && named(name)) {
-        return false;
-    }
-    match asked.iter().any(|(_, keeps)| *keeps) {
-        true => asked.iter().any(|(name, keeps)| *keeps && named(name)),
-        false => true,
-    }
-}
-
 /// The kind as `--files --texture` prints it: its name, and for a table the
 /// period that names the table it found.
 fn spelled(kind: trex::shape::RegionKind) -> String {
@@ -2316,18 +2299,41 @@ pub fn run_scan(args: &[String]) -> ExitCode {
         // The files a scan would read, and no scan: under the paths named,
         // or the current directory where none is.
         let roots = if positionals.is_empty() { vec![".".to_string()] } else { positionals };
+        let a_directory = roots.iter().any(|p| std::path::Path::new(p).is_dir());
         let (sources, errors) = collect(&roots, &walk);
+        let mut failed = !errors.is_empty();
         for e in &errors {
             eprintln!("trex: {e}");
         }
+        // A scan skips a binary file unless `--binary` asks for it, refusing
+        // a lone named one aloud and passing over the rest, so a listing
+        // drops the same files the same way.
+        let lone = !a_directory && sources.len() == 1;
         // `--files --texture` names what each file reads as. The kinds given
         // still filter, so the two together list the files of one kind and
         // say which it is; `--texture` with no kind after it is the listing
         // alone, which is the reading a user wants before choosing a filter.
         let naming = grep.texture_listing;
         for src in &sources {
+            if !binary && let Source::File(path) = src {
+                match trex::files::is_binary_file(path) {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        if lone {
+                            eprintln!("trex: {} holds a NUL byte and is binary; --binary scans it", src.name());
+                            failed = true;
+                        }
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("trex: cannot read {}: {e}", src.name());
+                        failed = true;
+                        continue;
+                    }
+                }
+            }
             let kind = (naming || !grep.textures.is_empty()).then(|| texture_of(src)).flatten();
-            if !grep.textures.is_empty() && !keeps_texture(&grep.textures, kind) {
+            if !grep.textures.is_empty() && !trex::shape::keeps_texture(&grep.textures, kind) {
                 continue;
             }
             let name = painter.paint(trex::paint::Role::Path, &src.name());
@@ -2337,7 +2343,7 @@ pub fn run_scan(args: &[String]) -> ExitCode {
                 _ => crate::out::line(&name),
             }
         }
-        return if errors.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE };
+        return if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS };
     }
     if let Some(why) = grep.windowing.follow_refusal() {
         eprintln!("trex scan: {why}");
@@ -2922,7 +2928,7 @@ pub fn run_scan(args: &[String]) -> ExitCode {
     if !grep.textures.is_empty() {
         let named: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
         sources.retain(|src| {
-            named.contains(src.name().as_str()) || keeps_texture(&grep.textures, texture_of(src))
+            named.contains(src.name().as_str()) || trex::shape::keeps_texture(&grep.textures, texture_of(src))
         });
     }
     let prefixed = with_filename.unwrap_or(a_directory || sources.len() > 1);
@@ -3703,6 +3709,7 @@ pub fn run_redact(args: &[String]) -> ExitCode {
         failed: !walk_errors.is_empty(),
         a_directory,
         binary,
+        verb: "redacts",
         dry_run,
         context,
         restrict: Restrict::of(&windowing, &unit),
@@ -4827,6 +4834,7 @@ pub fn run_rewrite(args: &[String]) -> ExitCode {
         failed: !walk_errors.is_empty(),
         a_directory,
         binary,
+        verb: "rewrites",
         dry_run,
         context,
         restrict: Restrict::of(&windowing, &unit),
@@ -4938,8 +4946,9 @@ pub(crate) type ExplainSpan<'a> = dyn Fn(&[u8], usize, usize) + 'a;
 /// input, the diffs and the prompts go to the standard output, and what was
 /// written is reported on the standard error as `--in-place` reports it.
 /// The walk's failure, `--binary`, the diff's context and the window each
-/// edit is confined to are read from `how`; `dry_run` and `a_directory` do
-/// not apply to a review.
+/// edit is confined to are read from `how`, and `a_directory` with the
+/// sources' count says whether one named file holding a NUL byte is refused
+/// aloud; `dry_run` does not apply to a review.
 pub(crate) fn review_sources(
     sources: &[Source],
     how: Editing<'_>,
@@ -4953,8 +4962,13 @@ pub(crate) fn review_sources(
 ) -> ExitCode {
     use std::io::{BufRead, Write};
 
-    let Editing { failed, binary, context, restrict, .. } = how;
+    let Editing { failed, a_directory, binary, verb, context, restrict, .. } = how;
     let mut failed = failed;
+    // One named file holding a NUL byte is refused aloud, as a scan or an
+    // edit to the standard output refuses it; a tree or a list of files
+    // passes over one without a word.
+    let lone = !a_directory && sources.len() == 1;
+    let mut refused = false;
     // Every file's bytes with the edits of its text, read before the first
     // question, so the session knows how many it holds.
     let mut queue: Vec<(&Source, Vec<u8>, Vec<trex::files::Edit>)> = Vec::new();
@@ -4968,6 +4982,11 @@ pub(crate) fn review_sources(
             }
         };
         if !binary && is_binary(&raw) {
+            if lone {
+                eprintln!("trex: {} holds a NUL byte and is binary; --binary {verb} it", src.name());
+                failed = true;
+                refused = true;
+            }
             continue;
         }
         let edits = edits_within(&trex::encoding::text_of(&raw), restrict, |piece| edits_of(src, piece));
@@ -4977,7 +4996,10 @@ pub(crate) fn review_sources(
     }
     let total: usize = queue.iter().map(|(_, _, edits)| edits.len()).sum();
     if total == 0 {
-        println!("no match");
+        // A refused file was never searched, so there is no match to deny.
+        if !refused {
+            println!("no match");
+        }
         return if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS };
     }
     let stdin = std::io::stdin();
@@ -5240,6 +5262,10 @@ pub(crate) struct Editing<'a> {
     pub(crate) a_directory: bool,
     /// `--binary`: a file holding a NUL byte is edited all the same.
     pub(crate) binary: bool,
+    /// What `--binary` lets the command do to a file holding a NUL byte, as
+    /// the notice refusing one named file says it: `rewrites`, `redacts` or
+    /// `fixes`.
+    pub(crate) verb: &'a str,
     /// `--dry-run`: the unified diff, and nothing written.
     pub(crate) dry_run: bool,
     /// The lines of context the diff shows around each change.
@@ -5263,7 +5289,7 @@ pub(crate) fn edit_sources(
         let src = &sources[k];
         *slot = change_of(src, how, |piece| edits_of(src, piece));
     });
-    report_changes(sources, &changes, how.failed, how.a_directory)
+    report_changes(sources, &changes, how.failed, how.a_directory, how.verb)
 }
 
 /// As [`edit_sources`], one source after another on this thread, for edits
@@ -5278,7 +5304,7 @@ pub(crate) fn edit_sources_in_order(
     mut edits_of: impl FnMut(&Source, Piece<'_>) -> Vec<trex::files::Edit>,
 ) -> ExitCode {
     let changes: Vec<Change> = sources.iter().map(|src| change_of(src, how, |piece| edits_of(src, piece))).collect();
-    report_changes(sources, &changes, how.failed, how.a_directory)
+    report_changes(sources, &changes, how.failed, how.a_directory, how.verb)
 }
 
 /// What editing one source came to: unreadable, binary and so skipped,
@@ -5314,13 +5340,20 @@ fn change_of(src: &Source, how: Editing<'_>, edits: impl FnOnce(Piece<'_>) -> Ve
 /// Report each source's change in path order, and say whether the run
 /// failed: the walk that found them failed, or one could not be read or
 /// written.
-fn report_changes(sources: &[Source], changes: &[Change], failed: bool, a_directory: bool) -> ExitCode {
+fn report_changes(sources: &[Source], changes: &[Change], failed: bool, a_directory: bool, verb: &str) -> ExitCode {
     // One named file is rewritten quietly; a tree or a list of files reports
     // each file it changed.
     let announce = a_directory || sources.len() > 1;
     let mut failed = failed;
     for (src, change) in sources.iter().zip(changes) {
         match change {
+            // One named file holding a NUL byte is refused aloud, as a scan
+            // or an edit to the standard output refuses it; a tree or a list
+            // of files passes over one without a word.
+            Change::Binary if !announce => {
+                eprintln!("trex: {} holds a NUL byte and is binary; --binary {verb} it", src.name());
+                failed = true;
+            }
             Change::Pending | Change::Binary | Change::Unchanged => {}
             Change::Failed(e) => {
                 eprintln!("trex: {e}");

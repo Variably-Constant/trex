@@ -6,34 +6,39 @@ weight: 30
 
 # Dual-grain scanning
 
-A token is a span of bytes, so the token stream is a coarsening of the byte stream. trex runs
-two co-operating grains over the same input at the same time.
+A token is a span of bytes, so a scan has two stages over the same input: the byte grain lexes
+the bytes into typed tokens, and the token grain matches the pattern over those tokens.
 
-- The **token grain** owns structure: balance, binding, valency, and the derivative fold over
-  typed atoms.
-- The **byte grain** owns literal speed and sub-token detail: SIMD literal scanning,
-  character-class membership inside a token, and the presence prefilters that answer the
-  content guard.
+## Inside a match
 
-## Complementary, not redundant
+The byte grain also answers what a token's bytes hold while the token grain matches. A
+byte-pattern between backticks is matched against one whole token's bytes, and the content guard
+`~"lit"` searches the forward window's bytes with a SIMD substring search. In
+`` <`[a-z]+`:t>.*</=t> `` the byte-pattern constrains the tag name's bytes while `=t` requires the
+closing name to equal the opening one:
 
-The two grains answer different questions about the same bytes, and their results join. A
-pattern is split at compile time: byte-level constraints route to the byte grain, structural
-constraints route to the token grain, and the join reconciles them on overlapping spans. The
-pattern `` <`[a-z]+`:t>.*</=t> `` carries both at once - the `` `[a-z]+` `` byte-pattern
-constrains the tag name's bytes while `=t` enforces the structural open/close match.
+```console
+$ trex scan '<`[a-z]+`:t>.*</=t>' --text '<div>hi</div> <H1>x</H1> <b>y</span>'
+[0..13] "<div>hi</div>"  captures: t="div"
+```
+
+`H1` fails the byte-pattern and `span` is not `b`.
 
 ## Producer and consumer
 
-The byte grain also produces the token stream the token grain consumes. Rather than tokenize
-fully and then scan, the byte grain tokenizes *ahead* while the token grain consumes the
-emerging stream, so the two overlap in time as a producer and a consumer. `scan_dual_grain`
-returns the matches (identical to a plain `scan`) plus a `GrainTiming` whose `overlap()` is a
-lower bound on the time the two grains ran at once.
+`scan_dual_grain` runs the two stages on two threads. The byte grain lexes the input in chunks
+of about 32 KiB, at most 64 of them, and hands each chunk's tokens on; the token grain matches
+the tokens produced so far while the byte grain lexes ahead.
 
-## Why not race
+The matches are the ones `scan` returns. The token grain commits a match only once no later byte
+can change it: it resumes the leftmost scan from the last committed token and commits up to the
+largest chunk boundary no match straddles. A pattern whose reach extends outside one match span,
+such as a content guard's forward window or a field's comma count from the input start, commits
+once at the end, and the byte grain still lexes ahead of it.
 
-A racing variant - both grains attempting the whole match while a referee picks a winner - is
-deliberately out of the architecture. Two engines doing the same job on the same bytes contend
-for the same work, and the redundant grain wastes the cycles it spends. The co-operating split
-keeps each grain on the work it is best at.
+## Observing the overlap
+
+Each grain counts its own compute time and not the time it waits on the other. `scan_dual_grain`
+returns the matches with a `GrainTiming`: where the two compute totals sum to more than the
+wall-clock span, the grains ran at the same time for at least the difference, and `overlap()`
+reports that lower bound.

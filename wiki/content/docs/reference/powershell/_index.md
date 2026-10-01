@@ -13,7 +13,8 @@ with [PWRS](https://github.com/Variably-Constant/PWRS). Its 49 cmdlets cover wha
 line does. Each takes text from the pipeline or files by path, writes objects a pipeline can
 sort, group and select, and answers to a second name with the `Tx` prefix: `Select-TxMatch` is
 `Select-TrexMatch`. It runs in PowerShell 7 on Windows x64, Linux x64, FreeBSD x64 and macOS
-arm64, and in Windows PowerShell 5.1, from one module; its Pester suites pass on each.
+arm64, and in Windows PowerShell 5.1, from one module; its Pester suites pass on each. The
+examples are on the task pages, under each one's PowerShell tab.
 
 `Trex` installs from the PowerShell Gallery:
 
@@ -34,54 +35,32 @@ Import-Module ./target/pwrs/Trex
 Built from `powershell/`, the module's library targets the baseline CPU of its architecture,
 x86-64 (apple-a14 on macOS), whatever `target-cpu` the host's cargo config names; trex picks its
 AVX2 and AVX-512 kernels at run time. `cargo pwrs test --release` runs the module's Rust tests and
-then its Pester suites in PowerShell 7 and in Windows PowerShell 5.1. The report suites compare the module's output with the command's,
-so `TREX_CLI` names a trex binary built from the same tree.
-
-## A first match
-
-```powershell
-PS> 'ping bob@x.com and ann@y.org' | Select-TrexMatch '\E:e' | Select-Object Start, Length, Text
-
-Start Length Text
------ ------ ----
-    5      9 bob@x.com
-   19      9 ann@y.org
-
-PS> Select-TrexMatch '\E:e' -InputObject 'ping bob@x.com' | ForEach-Object { $_.Captures.e }
-bob@x.com
-
-PS> 'mail bob@x.com now' | Edit-TrexText '\E:e' '[${e:domain}]'
-mail [x.com] now
-```
-
-A pattern is written as the [pattern syntax](../pattern-syntax/) page writes one, inside single
-quotes so PowerShell leaves `$` and backslashes alone.
+then its Pester suites in PowerShell 7 and in Windows PowerShell 5.1. The report suites compare
+the module's output with the command's, so `TREX_CLI` names a trex binary built from the same
+tree.
 
 ## How the cmdlets read and write
 
 | Concern | Behavior |
 |---|---|
+| Patterns | trex source text inside single quotes, so PowerShell leaves `$` and backslashes alone, or a `Trex.Pattern` from `New-TrexPattern`, compiled against the atoms in force; several patterns scan as one set |
 | Text | `-InputObject`, or strings piped in, each read on its own; `Group-TrexMatch`, `Get-TrexRecordShape`, `New-TrexBpe`, `New-TrexPrefilter` and `Test-TrexPrefilter` read every string piped in as one input |
-| Files | `-Path` expands wildcards; `-LiteralPath` takes a path as written and binds the `Path` of what `Get-ChildItem` pipes. A directory is walked under `.gitignore` and `.ignore` rules with hidden files and files holding a NUL byte skipped, which `-Hidden`, `-NoIgnore` and `-Binary` widen. A file in UTF-16 or UTF-32 with a byte-order mark reads as its text |
+| Files | `-Path` expands wildcards; `-LiteralPath` takes a path as written and binds the `Path` of what `Get-ChildItem` pipes. A directory is walked under `.gitignore` and `.ignore` rules with hidden files and files holding a NUL byte skipped, which `-Hidden`, `-NoIgnore` and `-Binary` widen. A file in UTF-16 or UTF-32 with a byte-order mark reads as its text. A relative `@file` a pattern names is read from the current location |
 | Offsets | `Start` and `Length` count UTF-16 code units, so `$text.Substring($m.Start, $m.Length)` is the match; `LineNumber` and `Column` count from 1 |
 | Values | a register's `Value` is the .NET type of its kind: a number a `long` or a `decimal`, a duration a `TimeSpan`, a timestamp a `DateTimeOffset`, an address or a version its canonical text |
-| Patterns | trex source text, or a `Trex.Pattern` from `New-TrexPattern`, compiled against the atoms in force; several patterns scan as one set |
 | Atoms | `Register-TrexAtom` and `Import-TrexAtom` declare atoms for the session, held in `$TrexSession`; `-Library` hands a cmdlet a `Trex.Library` in their place |
 | Changes | every cmdlet that writes a file takes `-WhatIf` and `-Confirm`, as do `Set-TrexClock` and `Unregister-TrexAtom` |
 | Refusals | parameters that contradict each other stop the cmdlet with an error that names them |
 
-The pages that follow run their examples in a folder shown as `C:\Temp\demo`, which holds the
-files each page shows with `Get-Content` before its first example reads them.
-
 {{< cards >}}
   {{< card link="matching/" title="Matching" subtitle="Select-TrexMatch, Test-TrexMatch, compiled patterns, file walks and indexes." >}}
-  {{< card link="rewriting/" title="Rewriting" subtitle="Templates, script blocks, masking, diffs and in-place review." >}}
-  {{< card link="grouping/" title="Grouping" subtitle="Counts by a rendered key, with sums, extremes and percentiles in .NET types." >}}
-  {{< card link="records/" title="Records and tokens" subtitle="Tokens, records, record shapes, record queries and inferred patterns." >}}
-  {{< card link="rules/" title="Rules" subtitle="Rule files, findings, fixes, SARIF and GitHub annotations." >}}
-  {{< card link="atoms/" title="Atoms and settings" subtitle="Custom atoms for the session or a library, their tests, and the clock." >}}
-  {{< card link="axes/" title="Property axes" subtitle="The ten Measure-Trex cmdlets and their reports." >}}
-  {{< card link="streams/" title="Streams and grammars" subtitle="Streaming scans, token grammars, byte-pair encoders and presence filters." >}}
+  {{< card link="rewriting/" title="Rewriting" subtitle="Edit-TrexText and Protect-TrexText." >}}
+  {{< card link="grouping/" title="Grouping" subtitle="Group-TrexMatch." >}}
+  {{< card link="records/" title="Records and tokens" subtitle="Tokens, records, record shapes, record queries and built patterns." >}}
+  {{< card link="rules/" title="Rules" subtitle="Get-TrexRule, Invoke-TrexRule and ConvertTo-TrexSarif." >}}
+  {{< card link="atoms/" title="Atoms and settings" subtitle="Atoms for the session or a library, their tests, and the clock." >}}
+  {{< card link="axes/" title="Property axes" subtitle="The ten Measure-Trex cmdlets." >}}
+  {{< card link="streams/" title="Streams and grammars" subtitle="Stream scanners, token grammars, byte-pair encoders and presence filters." >}}
   {{< card link="types/" title="Types" subtitle="Every class and enumeration the cmdlets write and take." >}}
 {{< /cards >}}
 

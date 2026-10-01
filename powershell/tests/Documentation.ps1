@@ -8,7 +8,11 @@
 # only `Get-Content ./a/path` is a fixture rather than an example: the lines
 # under it are that file's text, written where the page's examples run
 # before any example below it, so each example reads the files a reader has
-# been shown by the time they reach it.
+# been shown by the time they reach it. A `$ cat NAME` line in a `console`
+# block is a fixture too, as tests/wiki_examples.rs reads one: the lines
+# under it up to the next `$ ` line are the text of NAME. The files under
+# tests/documented that a page's commands name are placed before any of
+# them, as that test places them.
 #
 # The pages show the folder the examples run in as C:\Temp\demo. Wherever a
 # run writes the folder it actually ran in, as a path, a GitHub annotation's
@@ -16,6 +20,7 @@
 # before the output is compared.
 
 $script:TrexDocumentedRoot = 'C:\Temp\demo'
+$script:TrexDocumentedSeeds = [System.IO.Path]::GetFullPath((Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') (Join-Path 'tests' 'documented')))
 
 # The examples and fixtures of the page at $Path, in page order.
 function Read-TrexDocumentedPage {
@@ -24,6 +29,32 @@ function Read-TrexDocumentedPage {
     $items = [System.Collections.Generic.List[object]]::new()
     $i = 0
     while ($i -lt $lines.Count) {
+        if ($lines[$i] -ceq '```console') {
+            $end = $i + 1
+            while ($end -lt $lines.Count -and $lines[$end] -cne '```') { $end++ }
+            $j = $i + 1
+            while ($j -lt $end) {
+                if (-not $lines[$j].StartsWith('$ cat ')) {
+                    $j++
+                    continue
+                }
+                $at = $j + 1
+                $name = $lines[$j].Substring(6).Trim()
+                if ([System.IO.Path]::IsPathRooted($name) -or @($name -split '[\\/]' | Where-Object { $_ -eq '..' -or $_ -eq '' }).Count -gt 0) {
+                    throw "${Path}:${at}: `$ cat $name names a file outside the folder the examples run in"
+                }
+                $j++
+                $shown = [System.Collections.Generic.List[string]]::new()
+                while ($j -lt $end -and -not $lines[$j].StartsWith('$ ')) {
+                    $shown.Add($lines[$j])
+                    $j++
+                }
+                while ($shown.Count -gt 0 -and $shown[$shown.Count - 1].Trim() -eq '') { $shown.RemoveAt($shown.Count - 1) }
+                $items.Add([pscustomobject]@{ Kind = 'Fixture'; Line = $at; File = "./$name"; Shown = [string[]]$shown })
+            }
+            $i = $end + 1
+            continue
+        }
         if ($lines[$i] -cne '```powershell') {
             $i++
             continue
@@ -110,6 +141,38 @@ function ConvertTo-TrexShownOutput {
     Get-TrexShownLines ($Written -split "`r?`n")
 }
 
+# Copies into $Root each file under tests/documented that a word of
+# $Commands names, by its path under that folder or by its file name, or
+# that lies under a folder a word names, as tests/wiki_examples.rs seeds a
+# page. A word is read with its quotes, a leading `./` and a trailing `/`
+# taken off.
+function Copy-TrexDocumentedSeed {
+    param([AllowEmptyCollection()][string[]] $Commands, [Parameter(Mandatory)][string] $Root)
+    $words = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($command in $Commands) {
+        foreach ($word in ($command -split '[\s,;()]+')) {
+            $w = $word.Trim('''', '"')
+            if ($w.StartsWith('./')) { $w = $w.Substring(2) }
+            $w = $w.TrimEnd('/')
+            if ($w -ne '') { [void]$words.Add($w) }
+        }
+    }
+    $from = $script:TrexDocumentedSeeds
+    foreach ($file in Get-ChildItem -LiteralPath $from -Recurse -File) {
+        $named = $file.FullName.Substring($from.Length + 1).Replace('\', '/')
+        $under = @($words | Where-Object { $named.StartsWith("$_/", [System.StringComparison]::Ordinal) }).Count -gt 0
+        if (-not ($words.Contains($named) -or $words.Contains($file.Name) -or $under)) {
+            continue
+        }
+        $to = Join-Path $Root $named
+        $dir = Split-Path -Parent $to
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir | Out-Null
+        }
+        [System.IO.File]::Copy($file.FullName, $to)
+    }
+}
+
 # Runs every example of the page at $Path in a new folder $Root, fixtures
 # written as the page reaches them, and returns a description of each
 # example whose output differs from what the page shows: its line, its
@@ -120,6 +183,7 @@ function Invoke-TrexDocumentedPage {
     param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $Root)
     $trexDocItems = @(Read-TrexDocumentedPage -Path $Path)
     New-Item -ItemType Directory -Path $Root | Out-Null
+    Copy-TrexDocumentedSeed -Commands @($trexDocItems | Where-Object Kind -eq 'Example' | ForEach-Object Command) -Root $Root
     $trexDocUtf8 = [System.Text.UTF8Encoding]::new($false)
     $trexDocRendering = $null
     if ($null -ne (Get-Variable -Name PSStyle -ErrorAction Ignore)) {
