@@ -1,0 +1,19 @@
+{{- /*
+.text written under .quoting, the inverse of trex-unescape.html: raw as it
+is; ps-sq with each ' doubled; esc-dq and esc-sq with a backslash, the
+string's own quote, a line break and a tab escaped.
+*/ -}}
+{{- $t := .text -}}
+{{- if eq .quoting "ps-sq" -}}
+  {{- $t = replace $t "'" "''" -}}
+{{- else if in (slice "esc-dq" "esc-sq") .quoting -}}
+  {{- $t = replace $t `\` `\\` -}}
+  {{- if eq .quoting "esc-dq" -}}
+    {{- $t = replace $t `"` `\"` -}}
+  {{- else -}}
+    {{- $t = replace $t `'` `\'` -}}
+  {{- end -}}
+  {{- $t = replace $t "\n" `\n` -}}
+  {{- $t = replace $t "\t" `\t` -}}
+{{- end -}}
+{{- return $t -}}

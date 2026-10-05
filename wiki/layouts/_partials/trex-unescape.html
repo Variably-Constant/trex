@@ -1,0 +1,17 @@
+{{- /*
+The value .text holds under .quoting: raw text as written; ps-sq with each
+'' read as '; esc-dq and esc-sq with the backslash escapes \\ \" \' \n \t
+read, and any other backslash kept.
+*/ -}}
+{{- $t := .text -}}
+{{- if eq .quoting "ps-sq" -}}
+  {{- $t = replace $t "''" "'" -}}
+{{- else if in (slice "esc-dq" "esc-sq") .quoting -}}
+  {{- $t = replace $t `\\` "" -}}
+  {{- $t = replace $t `\"` `"` -}}
+  {{- $t = replace $t `\'` `'` -}}
+  {{- $t = replace $t `\n` "\n" -}}
+  {{- $t = replace $t `\t` "\t" -}}
+  {{- $t = replace $t "" `\` -}}
+{{- end -}}
+{{- return $t -}}

@@ -1,0 +1,26 @@
+/* The parts of a TREX pattern or pattern file inside a code block, as
+   trex-pattern.html and trex-decl.html mark them: tx is the pattern's own
+   text, and each tx- class one part of it, in a light and a dark color. */
+.chroma .tx { color: #24292f; }
+.chroma .tx-atom { color: #0b5cad; }
+.chroma .tx-lit { color: #0f7b3f; }
+.chroma .tx-reg { color: #7a3ccf; }
+.chroma .tx-ref { color: #b0136f; }
+.chroma .tx-pred { color: #a14a00; }
+.chroma .tx-anchor { color: #00727a; }
+.chroma .tx-op { color: #57606a; }
+.chroma .tx-bytes { color: #7a5b00; }
+.chroma .tx-key { color: #24292f; font-weight: bold; }
+.chroma .tx-com { color: #636c76; font-style: italic; }
+
+.dark .chroma .tx { color: #e6edf3; }
+.dark .chroma .tx-atom { color: #4f8fff; }
+.dark .chroma .tx-lit { color: #7ee09a; }
+.dark .chroma .tx-reg { color: #c3a6ff; }
+.dark .chroma .tx-ref { color: #ff8fd0; }
+.dark .chroma .tx-pred { color: #ffab6b; }
+.dark .chroma .tx-anchor { color: #4fd6d6; }
+.dark .chroma .tx-op { color: #9aa5b1; }
+.dark .chroma .tx-bytes { color: #e0c060; }
+.dark .chroma .tx-key { color: #e6edf3; font-weight: bold; }
+.dark .chroma .tx-com { color: #8b949e; font-style: italic; }

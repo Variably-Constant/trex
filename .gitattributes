@@ -1,0 +1,17 @@
+# The files the documented-example test reads are fixtures whose byte offsets
+# and sizes the reference quotes: docs/CLI.md states logs/a.log is 48 bytes and
+# gives matches at [6..8], [23..26], [33..37] and [46..47]. A checkout that
+# rewrote their line endings would move every one of those, and a machine with
+# core.autocrlf true at system level rewrites them in a clone by default.
+# These are pinned to the endings they were measured with.
+tests/documented/** text eol=lf
+
+# Except the corpus, which is read as bytes and should not be touched at all.
+tests/documented/moby.txt -text
+
+# The bytes the compress feature compiles in, taken as they are committed.
+# The device coder builds its word-stem prior from the English sample, so a
+# checkout that rewrote the sample's line endings would build a different
+# coder, whose code lengths differ from every figure measured with these bytes.
+_corpus/prior_en.txt -text
+_corpus/baked_model.br -text

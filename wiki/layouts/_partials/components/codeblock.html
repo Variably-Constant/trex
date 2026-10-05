@@ -1,0 +1,140 @@
+{{- /*
+Hextra's components/codeblock partial, with three changes.
+
+The language is the fence's info string up to its first comma, so a block
+fenced rust,standalone_crate for rustdoc highlights as rust.
+
+A console, powershell or python block holding a session, a line that opens
+with the language's prompt ("$ ", "PS> ", ">>> " or "... "), is highlighted
+line by line: a prompt line's command in its language, after the prompt, and
+every other line as output, as Chroma's console lexer marks output. A
+command whose single quotes are unbalanced at the end of its line goes on
+through the lines that balance them, as a quoted --text argument spanning
+lines does. Every documented command is run by the test suites, so a token
+the lexer marks as an error inside one is the lexer's limit, not the
+command's, and is shown as plain text.
+
+The TREX text in a console, powershell, python or rust block is colored. The
+slots pattern_slots.py lists for the block in data/pattern_slots.json are
+swapped for placeholders before the block is highlighted, and each
+placeholder is then replaced by its slot as trex-color-patterns.html colors
+it. A block the file holds no entry for stops the build. A block fenced trex
+is a pattern file, each line colored by trex-decl.html.
+*/ -}}
+{{ $filename := .filename | default "" -}}
+{{ $base_url := .base_url | default "" -}}
+{{ $lang := .lang | default "" }}
+{{ $content := .content }}
+{{ $options := .options | default (dict) }}
+
+{{- if $filename -}}
+  <div class="hextra-code-filename not-prose" dir="auto">
+    {{- if $base_url -}}
+
+      {{- $base_url = strings.TrimSuffix "/" $base_url -}}
+      {{- $filename = strings.TrimPrefix "/" $filename -}}
+      {{- $file_url := urls.JoinPath $base_url $filename -}}
+
+      <a class="hx:no-underline hx:inline-flex hx:items-center hx:gap-1" href="{{ $file_url }}" target="_blank" rel="noopener noreferrer">
+          <span>{{- $filename -}}</span>
+          {{- partial "utils/icon" (dict "name" "external-link" "attributes" "height=1em") -}}
+      </a>
+    {{- else -}}
+      {{- $filename -}}
+    {{- end -}}
+  </div>
+{{- end -}}
+
+{{- $lang = index (split $lang ",") 0 -}}
+{{- $content = replace $content "\r" "" -}}
+{{- $slot_html := slice -}}
+{{- if in (slice "console" "powershell" "python" "rust") $lang -}}
+  {{- $key := md5 (strings.TrimRight "\n" $content) -}}
+  {{- $table := site.Data.pattern_slots | default dict -}}
+  {{- if not (isset $table $key) -}}
+    {{- errorf "data/pattern_slots.json has no entry for the %s block that opens %q: run python3 pattern_slots.py in wiki/" $lang (index (split $content "\n") 0) -}}
+  {{- end -}}
+  {{- $masked := "" -}}
+  {{- $at := 0 -}}
+  {{- range $i, $slot := index $table $key -}}
+    {{- $start := int (index $slot 0) -}}
+    {{- $end := int (index $slot 1) -}}
+    {{- $masked = printf "%s%sTREXSLOT%dX" $masked (substr $content $at (sub $start $at)) $i -}}
+    {{- $slot_html = $slot_html | append (partial "trex-color-patterns.html" (dict "text" (substr $content $start (sub $end $start)) "kind" (index $slot 2) "quoting" (index $slot 3))) -}}
+    {{- $at = $end -}}
+  {{- end -}}
+  {{- $content = printf "%s%s" $masked (substr $content $at) -}}
+{{- end -}}
+{{- $prompts := dict "console" (slice "$ ") "powershell" (slice "PS> ") "python" (slice ">>> " "... ") -}}
+{{- $command_lang := dict "console" "bash" "powershell" "powershell" "python" "python" -}}
+{{- $lines := split $content "\n" -}}
+{{- if and (gt (len $lines) 0) (eq (index $lines (sub (len $lines) 1)) "") -}}
+  {{- $lines = first (sub (len $lines) 1) $lines -}}
+{{- end -}}
+{{- $ps := index $prompts $lang | default slice -}}
+{{- $session := false -}}
+{{- range $lines -}}
+  {{- $line := . -}}
+  {{- range $ps -}}
+    {{- if hasPrefix $line . -}}{{- $session = true -}}{{- end -}}
+  {{- end -}}
+{{- end -}}
+
+{{- if $session -}}
+  {{- $cmd_lang := index $command_lang $lang -}}
+  {{- $out := slice -}}
+  {{- $open_prompt := "" -}}
+  {{- $open_command := "" -}}
+  {{- $n := len $lines -}}
+  {{- range $i, $line := $lines -}}
+    {{- $prompt := "" -}}
+    {{- $command := "" -}}
+    {{- if $open_prompt -}}
+      {{- $prompt = $open_prompt -}}
+      {{- $command = printf "%s\n%s" $open_command $line -}}
+    {{- else -}}
+      {{- range $ps -}}
+        {{- if and (eq $prompt "") (hasPrefix $line .) -}}{{- $prompt = . -}}{{- end -}}
+      {{- end -}}
+      {{- if $prompt -}}{{- $command = strings.TrimPrefix $prompt $line -}}{{- end -}}
+    {{- end -}}
+    {{- $html := "" -}}
+    {{- $emit := true -}}
+    {{- if $prompt -}}
+      {{- if and (eq (mod (strings.Count "'" $command) 2) 1) (lt $i (sub $n 1)) -}}
+        {{- $open_prompt = $prompt -}}
+        {{- $open_command = $command -}}
+        {{- $emit = false -}}
+      {{- else -}}
+        {{- $open_prompt = "" -}}
+        {{- $open_command = "" -}}
+        {{- $tokens := "" -}}
+        {{- if $command -}}
+          {{- $tokens = replaceRE `^<code[^>]*>|</code>$` "" (string (highlight $command $cmd_lang (dict "hl_inline" true))) -}}
+          {{- $tokens = replaceRE `<span class="err">([^<]*)</span>` "$1" $tokens -}}
+        {{- end -}}
+        {{- $html = printf `<span class="gp">%s</span>%s` (htmlEscape $prompt) $tokens -}}
+      {{- end -}}
+    {{- else if $line -}}
+      {{- $html = printf `<span class="go">%s</span>` (htmlEscape $line) -}}
+    {{- end -}}
+    {{- if $emit -}}
+      {{- $out = $out | append (printf "<span class=\"line\"><span class=\"cl\">%s\n</span></span>" $html) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $html := delimit $out "" -}}
+  {{- range $i, $h := $slot_html -}}{{- $html = replace $html (printf "TREXSLOT%dX" $i) $h -}}{{- end -}}
+  <div><div class="highlight"><pre tabindex="0" class="chroma"><code class="language-{{ $lang }}" data-lang="{{ $lang }}">{{ $html | safeHTML }}</code></pre></div></div>
+{{- else if eq $lang "trex" -}}
+  {{- $out := slice -}}
+  {{- range $lines -}}
+    {{- $out = $out | append (printf "<span class=\"line\"><span class=\"cl\">%s\n</span></span>" (partial "trex-decl.html" (dict "text" . "quoting" "raw"))) -}}
+  {{- end -}}
+  <div><div class="highlight"><pre tabindex="0" class="chroma"><code class="language-trex" data-lang="trex">{{ delimit $out "" | safeHTML }}</code></pre></div></div>
+{{- else if transform.CanHighlight $lang -}}
+  {{- $html := string (highlight $content $lang $options) -}}
+  {{- range $i, $h := $slot_html -}}{{- $html = replace $html (printf "TREXSLOT%dX" $i) $h -}}{{- end -}}
+  <div>{{- $html | safeHTML -}}</div>
+{{- else -}}
+  <div><pre><code>{{ $content }}</code></pre></div>
+{{- end -}}

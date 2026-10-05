@@ -1,0 +1,64 @@
+[package]
+name = "trex-pwrs"
+version = "0.3.0"
+authors = ["Mark Newton"]
+edition = "2024"
+rust-version = "1.98"
+description = """TREX (Token Regular EXpression) is a regex-shaped pattern language over typed \
+tokens. The lexer reads the input once into typed tokens and a pattern matches over them: a \
+whole number, word, quoted string, IP address, URL, email address, timestamp, version and 18 \
+more kinds are one atom each, and the whitespace between tokens is never written. A capture binds a named register that a \
+later token must equal, a balanced bracket group matches whole, and matching does not \
+backtrack. Twelve property axes read what the input does at each position, and a pattern \
+can ask any of them there."""
+license = "MIT"
+repository = "https://github.com/Variably-Constant/trex"
+keywords = ["powershell", "regex", "tokens", "pattern-matching", "text-search", "cmdlet"]
+# Ships as a PowerShell module, not to crates.io.
+publish = false
+
+# The module manifest's CompanyName, Copyright, LicenseUri and ReleaseNotes;
+# Author is `authors` and ProjectUri is `repository`.
+[package.metadata.pwrs]
+company = "Variably Constant"
+copyright = "(c) 2026 Mark Newton"
+license-uri = "https://github.com/Variably-Constant/trex/blob/main/LICENSE-MIT"
+release-notes = """This version puts the CUDA kernel in every Windows and Linux artifact, \
+this module's native library among them, built with CUDA 12.0 for NVIDIA drivers of the 525 \
+series or later. It adds readings of the gravity and context axes, every axis's own \
+thresholds as settings, written cuts on @seam and @ambiguous, and a hex token kind. A number \
+written with an exponent, a radix prefix or underscore groups lexes as one number, and text \
+outside ASCII reads as text. It breaks 0.2.0 callers, which is why it is 0.3.0. What changed \
+is listed in https://github.com/Variably-Constant/trex/blob/main/CHANGELOG.md."""
+
+# The module's native library. Its name is the file every platform folder
+# carries, kept apart from the `trex` binary's artifacts.
+[lib]
+name = "trex_pwrs"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The binding framework, published on crates.io as PoWerRuSt, since crates.io
+# carries an unrelated `pwrs`; the library it builds is still `pwrs`, which is
+# what the source writes. cargo-pwrs builds the module and takes the same
+# version.
+pwrs = { package = "PoWerRuSt", version = "0.3.1" }
+# The engine with its default features, as every trex surface takes it.
+trex = { package = "trex-re", path = ".." }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = "warn"
+
+# A workspace of its own, with its own lock and release profile, so building
+# trex never builds PWRS.
+[workspace]
+
+# The module ships from the release profile. Unwinding stays on: PWRS turns a
+# panic at the boundary into a terminating error, where abort would end the
+# PowerShell process, and trex's own fallbacks catch panics as well.
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,76 @@
+# The macOS half of the PowerShell module.
+#
+# The module ships one native library per platform under runtimes/<rid>/native/.
+# This workflow builds the osx-arm64 library, runs the Pester suites against
+# it with a trex command built from the same commit, and uploads the module
+# folder for a release to fold in with `cargo pwrs merge`, and the trex
+# command built under the release profile for the GitHub Release's macOS
+# arm64 binary. It runs on every push to main and on dispatch.
+
+name: pwrs macos
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  module:
+    name: PowerShell module on macOS arm64
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: What the host has
+        shell: bash
+        run: |
+          uname -m
+          rustc --version
+          pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          dotnet --version
+
+      # The same version every other host builds with, or the manifests
+      # differ and `cargo pwrs merge` refuses this folder.
+      - name: Install the build tool
+        run: cargo install cargo-pwrs --version 0.3.1 --locked --force
+
+      # The report suites compare the module's output with the command's.
+      - name: Build the trex command
+        run: cargo build --profile release-test
+
+      # powershell/.cargo/config.toml builds the library for apple-a14, the
+      # oldest Apple Silicon core, so it runs on every Mac that has one.
+      - name: Build the module
+        working-directory: powershell
+        run: cargo pwrs build --release
+
+      - name: Run the Pester suites
+        working-directory: powershell
+        env:
+          TREX_CLI: ${{ github.workspace }}/target/release-test/trex
+        run: cargo pwrs test --release
+
+      # The whole module folder, so its manifest can be checked against the
+      # other platforms' before the library is folded in. `cargo pwrs merge`
+      # refuses manifests that differ.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pwrs-module-osx-arm64
+          path: powershell/target/pwrs/Trex
+
+      - name: Build the trex command for a release
+        run: cargo build --release --bin trex
+
+      - name: Check the release trex command runs
+        run: ./target/release/trex --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trex-osx-arm64
+          path: target/release/trex

@@ -1,0 +1,169 @@
+# Build the Python wheels and the source distribution, on every push to main
+# and on dispatch.
+#
+# One wheel per platform serves every interpreter from 3.11 upward, because
+# the crate targets the stable ABI. A published wheel targets a baseline CPU,
+# never the machine that built it, and trex picks its wide kernels at run
+# time: x86-64 on Linux and Windows, apple-a14 (the oldest Apple Silicon core)
+# on macOS. The Linux wheel is built in the manylinux_2_28 container so it
+# installs on any distribution with glibc 2.28 or later. FreeBSD installs from
+# the source distribution, since PyPI takes no FreeBSD wheel.
+#
+# The Windows and Linux wheels carry the CUDA kernel, baked by CUDA 12.0's
+# nvcc, whose PTX loads on 525-series drivers and up; TREX_REQUIRE_CUDA=1
+# fails either build where the kernel did not bake. nvcc 12.0 takes no MSVC
+# newer than 14.39 and no gcc newer than 12, so the Windows job installs
+# Visual Studio 2022 Build Tools' MSVC 14.39 beside the image's newer
+# compilers and builds in its environment. NVIDIA ships no CUDA toolkit for
+# macOS, so that wheel is CPU-only.
+#
+# Nothing here publishes. The wheels are left as artifacts for a release to
+# upload.
+
+name: python wheels
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  stable-abi:
+    name: stable ABI on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      TREX_REQUIRE_CUDA: ${{ matrix.require_cuda }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rustflags: "-C target-cpu=x86-64"
+            manylinux: "2_28"
+            require_cuda: "1"
+          - os: windows-latest
+            rustflags: "-C target-cpu=x86-64"
+            manylinux: "off"
+            require_cuda: "1"
+          - os: macos-latest
+            rustflags: "-C target-cpu=apple-a14"
+            manylinux: "off"
+            require_cuda: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # The floor the stable ABI is taken against. A wheel built here
+          # runs on every later interpreter too.
+          python-version: "3.11"
+
+      - name: Install MSVC 14.39 on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/vs_buildtools.exe" https://aka.ms/vs/17/release/vs_buildtools.exe
+          code=0
+          # The workload alone installs only what it requires; the vcvars
+          # scripts come with the latest toolset, which it only recommends.
+          "$RUNNER_TEMP/vs_buildtools.exe" --quiet --wait --norestart --nocache --installPath 'C:\VS2022BuildTools' \
+            --add Microsoft.VisualStudio.Workload.VCTools \
+            --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+            --add Microsoft.VisualStudio.Component.VC.14.39.17.9.x86.x64 \
+            --add Microsoft.VisualStudio.Component.Windows11SDK.26100 || code=$?
+          # 3010 is the installer's success that asks for a restart.
+          [ "$code" = 0 ] || [ "$code" = 3010 ] || exit "$code"
+          ls /c/VS2022BuildTools/VC/Tools/MSVC /c/VS2022BuildTools/VC/Auxiliary/Build
+
+      - name: Install CUDA 12.0 on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/cuda.exe" https://developer.download.nvidia.com/compute/cuda/12.0.1/network_installers/cuda_12.0.1_windows_network.exe
+          "$RUNNER_TEMP/cuda.exe" -s nvcc_12.0 cudart_12.0
+          cuda="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.0"
+          "$cuda/bin/nvcc.exe" --version
+          echo "$cuda/bin" >> "$GITHUB_PATH"
+          echo "CUDA_PATH=$cuda" >> "$GITHUB_ENV"
+
+      - name: Build in MSVC 14.39's environment on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vcvars = 'C:\VS2022BuildTools\VC\Auxiliary\Build\vcvars64.bat'
+          $kept = 'PATH', 'INCLUDE', 'LIB', 'LIBPATH', 'VCINSTALLDIR', 'VCToolsInstallDir', 'VCToolsVersion',
+            'VSINSTALLDIR', 'WindowsSdkDir', 'WindowsSDKVersion', 'UniversalCRTSdkDir', 'UCRTVersion'
+          # vcvars64.bat can print an error and still exit 0, so the toolset it
+          # sets is checked as well, and its own lines are shown on a failure.
+          $set = @(cmd /c "`"$vcvars`" -vcvars_ver=14.39 && set")
+          $version = "$($set -match '^VCToolsVersion=' -replace '^VCToolsVersion=')"
+          if ($LASTEXITCODE -ne 0 -or $version -notlike '14.39.*') {
+            $set -notmatch '^[\w()]+='
+            throw "vcvars64.bat -vcvars_ver=14.39 exited $LASTEXITCODE with MSVC '$version'"
+          }
+          foreach ($line in $set) {
+            $name, $value = $line -split '=', 2
+            if ($name -in $kept) { Add-Content -LiteralPath $env:GITHUB_ENV -Value "$($name.ToUpperInvariant() -eq 'PATH' ? 'PATH' : $name)=$value" }
+          }
+          "MSVC $version"
+
+      - name: Build
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          command: build
+          args: --release --out dist
+          manylinux: ${{ matrix.manylinux }}
+          rust-toolchain: stable
+          # The manylinux container is AlmaLinux 8: CUDA 12.0's nvcc comes
+          # from NVIDIA's RHEL 8 repository, and its host compiler is the
+          # system g++ 8, since 12.0 takes no gcc newer than 12 and the
+          # image's gcc-toolset is newer.
+          docker-options: -e TREX_REQUIRE_CUDA
+          before-script-linux: |
+            dnf install -y dnf-plugins-core
+            dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
+            dnf install -y cuda-nvcc-12-0 cuda-cudart-devel-12-0 gcc-c++
+            export PATH="/usr/local/cuda-12.0/bin:$PATH"
+            export NVCC_PREPEND_FLAGS="-ccbin /usr/bin/g++"
+            nvcc --version
+            /usr/bin/g++ --version
+
+      - name: Check the wheel imports and its tests pass
+        shell: bash
+        working-directory: python
+        run: |
+          python -m pip install --upgrade pip pytest
+          # The distribution is trex-re; trex is what it imports as.
+          python -m pip install --no-index --find-links dist trex-re
+          # -P keeps python/ off the import path, so `trex` is the installed
+          # wheel and not the package source in python/trex/ beside it.
+          python -P -c "import trex; print(trex.Pattern(r'\N').find('order 42').text)"
+          python -P -m pytest tests -q
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-abi3-${{ matrix.os }}
+          path: python/dist
+
+  source:
+    name: source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          command: sdist
+          args: --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: python/dist

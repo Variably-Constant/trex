@@ -1,0 +1,10 @@
+# The module's library is built for each platform's baseline CPU, so it
+# imports on any machine of its architecture: trex picks its AVX2 and
+# AVX-512 kernels at run time. A target's `rustflags` replace
+# `build.rustflags` from any other config, a host's `target-cpu=native`
+# among them. A `RUSTFLAGS` in the environment replaces both.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "target-cpu=apple-a14"]

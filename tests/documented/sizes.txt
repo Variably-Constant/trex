@@ -1,0 +1,4 @@
+alpha 1000B 80ms
+alpha 2000B 80ms
+alpha 4000B 80ms
+beta 8000B 300ms

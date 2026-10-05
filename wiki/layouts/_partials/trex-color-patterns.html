@@ -1,0 +1,21 @@
+{{- /*
+The HTML for one slot of TREX text from data/pattern_slots.json: .text as
+the code block holds it, .kind (pattern, decl or bytes) and .quoting (raw,
+esc-dq, esc-sq or ps-sq), the escaping .text is written in. The text is read
+as the value it holds, colored, and written back in the same escaping.
+*/ -}}
+{{- $quoting := .quoting -}}
+{{- $value := partial "trex-unescape.html" (dict "text" .text "quoting" $quoting) -}}
+{{- $out := "" -}}
+{{- if eq .kind "pattern" -}}
+  {{- $out = partial "trex-pattern.html" (dict "text" $value "quoting" $quoting) -}}
+{{- else if eq .kind "bytes" -}}
+  {{- $out = printf `<span class="tx"><span class="tx-bytes">%s</span></span>` (htmlEscape (partial "trex-escape.html" (dict "text" $value "quoting" $quoting))) -}}
+{{- else -}}
+  {{- $lines := slice -}}
+  {{- range split $value "\n" -}}
+    {{- $lines = $lines | append (partial "trex-decl.html" (dict "text" . "quoting" $quoting)) -}}
+  {{- end -}}
+  {{- $out = delimit $lines (htmlEscape (partial "trex-escape.html" (dict "text" "\n" "quoting" $quoting))) -}}
+{{- end -}}
+{{- return $out -}}

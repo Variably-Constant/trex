@@ -1,0 +1,32 @@
+{{- /*
+The TREX pattern .text, returned as HTML: a tx span holding each part of the
+pattern in its class, each part written under .quoting (trex-escape.html).
+A literal "..." or a silhouette #"..." (tx-lit); a byte-pattern `...` or a
+byte class \d \w \s \h \a \u \l (tx-bytes); a position anchor \A \z \G \K ^
+$, or a lens or anchor @name or @k (tx-anchor); an atom \X or \{name}, a
+balanced group's opening \B( \B[ \B{, or the any-token . (tx-atom); a counted
+repetition {m,n}, a quantifier, a choice, a group, a guard or a group mode
+(tx-op); a predicate {...} (tx-pred); a register :name or ::name (tx-reg); a
+back-reference =name or =relation name (tx-ref). Any other character, as a
+bare punctuation literal, keeps the tx span's color. Every character falls in
+exactly one group, so the parts join back into the pattern exactly.
+*/ -}}
+{{- $quoting := .quoting | default "raw" -}}
+{{- $re := `(#"(?:[^"\\]|\\.)*"|"(?:[^"\\]|\\.)*")|(\x60[^\x60]*\x60|\\[dwshaul])|(\\[AzGK]|@\d+|@[A-Za-z][\w:.<>=+\-%/#@]*|\^|\$)|(\\B[(\[{]|\\\{[^{}]*\}|\\.|\.)|(\{\d+(?:,\d*)?\}[?+]?|\(\?orbit:[\w/]+|\(\?>|\[\^|\|\||\|>|!?~(?:>\d+|#|<|\d+)?|[*+?]{1,2})|(\{[^{}]*\})|([|()\[\]{}&!])|(::?[A-Za-z_][\w.]*)|(=(?:[a-z]+\d*(?::[a-z]+)?(?:/\d+)?\s+)?[A-Za-z_][\w.]*)|([\s\S])` -}}
+{{- $classes := slice "" "tx-lit" "tx-bytes" "tx-anchor" "tx-atom" "tx-op" "tx-pred" "tx-op" "tx-reg" "tx-ref" "" -}}
+{{- $out := "" -}}
+{{- range findRESubmatch $re .text -}}
+  {{- $m := . -}}
+  {{- $class := "" -}}
+  {{- range $i, $c := $classes -}}
+    {{- if and (gt $i 0) (eq $class "") (ne (index $m $i) "") -}}{{- $class = $c -}}{{- end -}}
+  {{- end -}}
+  {{- $t := index $m 0 -}}
+  {{- if ne $quoting "raw" -}}{{- $t = partial "trex-escape.html" (dict "text" $t "quoting" $quoting) -}}{{- end -}}
+  {{- if $class -}}
+    {{- $out = printf `%s<span class="%s">%s</span>` $out $class (htmlEscape $t) -}}
+  {{- else -}}
+    {{- $out = printf "%s%s" $out (htmlEscape $t) -}}
+  {{- end -}}
+{{- end -}}
+{{- return printf `<span class="tx">%s</span>` $out -}}

@@ -1,0 +1,100 @@
+{{- /*
+One line of a TREX pattern file, .text, returned as HTML in a tx span, each
+piece written under .quoting (trex-escape.html): a comment (tx-com); a
+declaration's keyword, a rule field's name, a severity, and test's accepts and
+rejects (tx-key); the = after a name (tx-op); the pattern of shape,
+shape-after, kind, let, unless, record-start, record-span and a rule, through
+trex-pattern.html; test examples (tx-lit); fields marks (tx-reg). A name, a
+template, a glob, a unit and metadata keep the tx span's color.
+*/ -}}
+{{- $line := .text -}}
+{{- $quoting := .quoting | default "raw" -}}
+{{- $parts := slice -}}
+{{- $done := false -}}
+{{- with findRESubmatch `^(\s*)(#.*)$` $line 1 -}}
+  {{- $m := index . 0 -}}
+  {{- $parts = $parts | append (dict "t" (index $m 1)) (dict "c" "tx-com" "t" (index $m 2)) -}}
+  {{- $done = true -}}
+{{- end -}}
+{{- if not $done -}}
+  {{- with findRESubmatch `^(\s*)(shape-after|shape|kind|let|unless|record-start|record-span)(\s+)([\w.-]+)(\s*)(=)(\s*)(.*)$` $line 1 -}}
+    {{- $m := index . 0 -}}
+    {{- $parts = $parts | append (dict "t" (index $m 1)) (dict "c" "tx-key" "t" (index $m 2)) (dict "t" (printf "%s%s%s" (index $m 3) (index $m 4) (index $m 5))) (dict "c" "tx-op" "t" "=") (dict "t" (index $m 7)) (dict "c" "pattern" "t" (index $m 8)) -}}
+    {{- $done = true -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $done -}}
+  {{- with findRESubmatch `^(\s+)(pattern|unless|record-start|record-span)(\s*)(=)(\s*)(.*)$` $line 1 -}}
+    {{- $m := index . 0 -}}
+    {{- $parts = $parts | append (dict "t" (index $m 1)) (dict "c" "tx-key" "t" (index $m 2)) (dict "t" (index $m 3)) (dict "c" "tx-op" "t" "=") (dict "t" (index $m 5)) (dict "c" "pattern" "t" (index $m 6)) -}}
+    {{- $done = true -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $done -}}
+  {{- with findRESubmatch `^(\s+)(message|severity|fix|files|record|meta\.[\w.-]+)(\s*)(=)(.*)$` $line 1 -}}
+    {{- $m := index . 0 -}}
+    {{- $parts = $parts | append (dict "t" (index $m 1)) (dict "c" "tx-key" "t" (index $m 2)) (dict "t" (index $m 3)) (dict "c" "tx-op" "t" "=") (dict "t" (index $m 5)) -}}
+    {{- $done = true -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $done -}}
+  {{- with findRESubmatch `^(\s*)(rule)(\s+)([\w.-]+)(?:(\s+)(error|warning|note))?(?:(\s+)("(?:[^"\\]|\\.)*"))?(?:(\s*)(=)(\s*)(.*))?$` $line 1 -}}
+    {{- $m := index . 0 -}}
+    {{- $parts = $parts | append (dict "t" (index $m 1)) (dict "c" "tx-key" "t" (index $m 2)) (dict "t" (printf "%s%s" (index $m 3) (index $m 4))) -}}
+    {{- if index $m 6 -}}{{- $parts = $parts | append (dict "t" (index $m 5)) (dict "c" "tx-key" "t" (index $m 6)) -}}{{- end -}}
+    {{- if index $m 8 -}}{{- $parts = $parts | append (dict "t" (printf "%s%s" (index $m 7) (index $m 8))) -}}{{- end -}}
+    {{- if index $m 10 -}}{{- $parts = $parts | append (dict "t" (index $m 9)) (dict "c" "tx-op" "t" "=") (dict "t" (index $m 11)) (dict "c" "pattern" "t" (index $m 12)) -}}{{- end -}}
+    {{- $done = true -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $done -}}
+  {{- with findRESubmatch `^(\s*)(test)(\s+)([\w.-]+)(.*)$` $line 1 -}}
+    {{- $m := index . 0 -}}
+    {{- $parts = $parts | append (dict "t" (index $m 1)) (dict "c" "tx-key" "t" (index $m 2)) (dict "t" (printf "%s%s" (index $m 3) (index $m 4))) -}}
+    {{- range findRESubmatch `("(?:[^"\\]|\\.)*")|\b(accepts|rejects)\b|([\s\S])` (index $m 5) -}}
+      {{- if index . 1 -}}{{- $parts = $parts | append (dict "c" "tx-lit" "t" (index . 1)) -}}
+      {{- else if index . 2 -}}{{- $parts = $parts | append (dict "c" "tx-key" "t" (index . 2)) -}}
+      {{- else -}}{{- $parts = $parts | append (dict "t" (index . 0)) -}}
+      {{- end -}}
+    {{- end -}}
+    {{- $done = true -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $done -}}
+  {{- with findRESubmatch `^(\s*)(fields)(\s+)([\w.-]+)(.*)$` $line 1 -}}
+    {{- $m := index . 0 -}}
+    {{- $parts = $parts | append (dict "t" (index $m 1)) (dict "c" "tx-key" "t" (index $m 2)) (dict "t" (printf "%s%s" (index $m 3) (index $m 4))) -}}
+    {{- range findRESubmatch `(\{[^{}]*\})|([\s\S])` (index $m 5) -}}
+      {{- if index . 1 -}}{{- $parts = $parts | append (dict "c" "tx-reg" "t" (index . 1)) -}}
+      {{- else -}}{{- $parts = $parts | append (dict "t" (index . 0)) -}}
+      {{- end -}}
+    {{- end -}}
+    {{- $done = true -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $done -}}
+  {{- with findRESubmatch `^(\s*)(fix|files|record|meta)(\s+)(.*)$` $line 1 -}}
+    {{- $m := index . 0 -}}
+    {{- $parts = $parts | append (dict "t" (index $m 1)) (dict "c" "tx-key" "t" (index $m 2)) (dict "t" (printf "%s%s" (index $m 3) (index $m 4))) -}}
+    {{- $done = true -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $done -}}
+  {{- $parts = $parts | append (dict "t" $line) -}}
+{{- end -}}
+{{- $out := "" -}}
+{{- range $parts -}}
+  {{- $class := .c | default "" -}}
+  {{- if eq $class "pattern" -}}
+    {{- $out = printf "%s%s" $out (partial "trex-pattern.html" (dict "text" .t "quoting" $quoting)) -}}
+  {{- else if .t -}}
+    {{- $t := .t -}}
+    {{- if ne $quoting "raw" -}}{{- $t = partial "trex-escape.html" (dict "text" $t "quoting" $quoting) -}}{{- end -}}
+    {{- if $class -}}
+      {{- $out = printf `%s<span class="%s">%s</span>` $out $class (htmlEscape $t) -}}
+    {{- else -}}
+      {{- $out = printf "%s%s" $out (htmlEscape $t) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- return printf `<span class="tx">%s</span>` $out -}}

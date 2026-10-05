@@ -1,0 +1,361 @@
+# Published as trex-re, since crates.io's `trex` is another project; the
+# library is still `trex` and so is the binary, so `use trex::...` and the
+# `trex` command read as the documentation writes them.
+[package]
+name = "trex-re"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.96"
+authors = ["Mark Newton"]
+description = "TREX (Token Regular EXpression) is a regex-shaped pattern language over typed tokens, evaluated by derivatives with long-distance binding and no catastrophic backtracking."
+license = "MIT"
+repository = "https://github.com/Variably-Constant/trex"
+homepage = "https://variably-constant.github.io/trex/"
+documentation = "https://docs.rs/trex-re"
+readme = "README.crates.md"
+keywords = ["regex", "tokens", "pattern-matching", "text-search", "log-parsing"]
+categories = ["text-processing", "command-line-utilities", "parsing"]
+# What the default build and the doctests read: the source, the CUDA kernels
+# build.rs bakes, the prior corpus the device coder compiles in, and the wiki
+# reference pages, which src/lib.rs compiles as doctests. The 21.6 MB baked
+# prior is left out, which puts the crate under crates.io's size limit; it is
+# compiled in only by the `compress` feature, which therefore builds from the
+# repository alone.
+include = [
+    "/src/**/*",
+    "/build.rs",
+    "/kernels/*.cu",
+    "/_corpus/prior_en.txt",
+    "/wiki/content/docs/reference/**/*.md",
+    "/README.md",
+    "/README.crates.md",
+    "/CHANGELOG.md",
+    "/LICENSE-MIT",
+]
+
+# trex is a standalone token-pattern scanner: a regex-shaped pattern language over typed
+# tokens, evaluated by derivatives. The Python bindings under python/ are the workspace's
+# one other member.
+[workspace]
+members = ["python"]
+# The PowerShell module builds as a workspace of its own, with its own lock and
+# release profile, so building trex never builds PWRS.
+exclude = ["powershell"]
+resolver = "2"
+
+[lib]
+name = "trex"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trex"
+path = "src/main.rs"
+
+[features]
+# GPU is on by default. The CUDA SIMT scan backend is baked into the
+# binary, and at runtime the engine auto-detects a device: an automatic scan
+# of a pattern that reads only token kinds runs on the CPU engine or splits
+# its anchors across the cores and the device, by what the process has
+# measured at the input's size, and runs on the CPU when no device is
+# present. build.rs needs nvcc to bake the kernel; without nvcc it emits a
+# placeholder and the binary still builds and runs CPU-only. Build with
+# --no-default-features for a pure-CPU binary that pulls in no CUDA
+# dependency at all.
+default = ["gpu", "tandem"]
+gpu = ["dep:cudarc"]
+# The compressor behind `trex compress` and the coder options of `trex seam`:
+# the context-mixing coders, the 21.6 MB byte-ngram prior compiled in for them,
+# the cache that maps that prior from disk, and, with `gpu` on as well, the
+# device coder and its kernel. The one feature outside `default`, so a default
+# build carries none of it; a binary built without it answers `trex compress`
+# with the flag that builds it: `cargo build --release --features compress`.
+compress = ["dep:brotli", "dep:memmap2"]
+# CPU + GPU tandem dispatch: a batch of inputs is split across the device
+# and the cores and scanned concurrently through the extended-Flynn-taxonomy
+# scheduler's hybrid join. On by default, and it implies `gpu`.
+tandem = ["gpu"]
+
+[dependencies]
+# CUDA driver bindings, used only by the `gpu` feature. Dynamic loading
+# means nvcuda is resolved at runtime (driver-only deployment); the CUDA
+# version is taken from the build machine's nvcc, and on a machine with no
+# nvcc it is the newest one cudarc knows, so the crate builds anywhere and
+# a machine without a device runs on the CPU.
+cudarc = { version = "0.19", optional = true, default-features = false, features = [
+    "driver",
+    "nvrtc",
+    "cuda-version-from-build-system",
+    "fallback-latest",
+    "dynamic-loading",
+] }
+# Extended-Flynn-taxonomy work-stealing scheduler. Core dependency: the
+# parallel scan, lexer, rewrite, and pipeline route through its
+# work-stealing pool, and the tandem feature uses its hybrid CPU +
+# accelerator join. One source across every crate in the constellation:
+# two Flynnels in one tree link as duplicate marker symbols, and 0.1 and
+# 0.2 are semver-incompatible, so a crate left behind pulls both. trex calls
+# the scheduler alone (JobPlan, par_iter, join_hybrid, sleep, call_site,
+# notice), none of the reference backends, so it takes only the scheduler's
+# per-host calibration table; the CUDA, GPU-peer, JAX, WASM, shared-memory
+# and verify-chain features stay off and their crates (wasmtime and
+# cranelift among them) stay out of every trex build.
+flynnel = { version = "0.6", default-features = false, features = ["persisted-calibration"] }
+# Maps the prior cache's tables (`compress --prior-cache DIR`); the `compress`
+# feature takes it.
+memmap2 = { version = "0.9", optional = true }
+# The baked prior is brotli-compressed at quality 11 and compiled in: `seam
+# --build-model` writes it and the coder decodes it. The `compress` feature
+# takes it.
+brotli = { version = "8.0.4", optional = true }
+# The Unicode normalization tables behind the `fold` orbit rung: NFKD, so a
+# compatibility form and a letter with a diacritic fold onto the plain letter.
+unicode-normalization = "0.1"
+# The directory walk behind `trex scan PATTERN DIR`: ripgrep's own, with
+# .gitignore and .ignore rules applied and hidden entries skipped.
+ignore = "0.4"
+# The lock-free queues the trace keeps what it records in, which every thread
+# pushes to and a take drains.
+crossbeam-queue = "0.3.14"
+# The operating system's file-change notifications (inotify,
+# ReadDirectoryChangesW, FSEvents, kqueue), which wake a follow of a growing
+# file.
+notify = "8.2.0"
+
+# The Windows console's switch for escape-code processing, which the colored
+# reports need on; the walk above already builds it on Windows.
+[target.'cfg(windows)'.dependencies]
+winapi-util = "0.1"
+
+[dev-dependencies]
+# Measurement only, for the example that asks what SharedArray costs over a
+# raw mapping of the prior.
+subetha-cxc = "0.5.1"
+# Independent oracle for the differential correctness test: on the
+# pure-regular subset, trex match spans must equal this engine's.
+regex = "1.12"
+# The same engine's building blocks, so the conformance sweep can run its
+# reference machines (the PikeVM, and the meta engine with its literal
+# prefilters off) rather than only the tuned front door.
+regex-automata = "0.4"
+
+# The examples that assert rather than only print. `test = true` builds each
+# under the test harness as well, so `cargo test` runs the assertions instead
+# of only compiling them; `cargo run --example <name>` still runs the program.
+# An example whose claims can go stale belongs here.
+[[example]]
+name = "patterns"
+test = true
+
+[[example]]
+name = "linear_immunity"
+test = true
+
+[[example]]
+name = "vs_regex"
+test = true
+
+[[example]]
+name = "holonomy_binding_grounding"
+test = true
+
+# The coder's examples: each reads the compressor, its prior or its device
+# coder, which only a `compress` build carries.
+[[example]]
+name = "prior_access_replay"
+required-features = ["compress"]
+
+[[example]]
+name = "baked_prune"
+required-features = ["compress"]
+
+[[example]]
+name = "baked_vigilance"
+required-features = ["compress"]
+
+[[example]]
+name = "blob_anatomy"
+required-features = ["compress"]
+
+[[example]]
+name = "blob_selfcoded"
+required-features = ["compress"]
+
+[[example]]
+name = "does_the_group_delay_help_the_coder"
+required-features = ["compress"]
+
+[[example]]
+name = "does_the_group_delay_select_the_weights"
+required-features = ["compress"]
+
+[[example]]
+name = "gpu_compress_phases"
+required-features = ["compress"]
+
+[[example]]
+name = "gpu_default_prior_cost"
+required-features = ["compress"]
+
+[[example]]
+name = "gpu_held_prior"
+required-features = ["compress"]
+
+[[example]]
+name = "gpu_prior_projection"
+required-features = ["compress"]
+
+[[example]]
+name = "ppm_vigilance"
+required-features = ["compress"]
+
+[[example]]
+name = "prior_compare"
+required-features = ["compress"]
+
+[[example]]
+name = "prior_load_cost"
+required-features = ["compress"]
+
+[[example]]
+name = "prior_mapped"
+required-features = ["compress"]
+
+[[example]]
+name = "prior_read_rate"
+required-features = ["compress"]
+
+[[example]]
+name = "prior_shared_array"
+required-features = ["compress"]
+
+# Perf probes and micro-benches. Each is a plain `fn main` program, so
+# `harness = false` disables the default libtest bench harness. `cargo bench`
+# runs them; they are not part of `cargo run --example`.
+[[bench]]
+name = "gpu_throughput"
+harness = false
+
+[[bench]]
+name = "gpu_rewrite_throughput"
+harness = false
+
+[[bench]]
+name = "engine_surface"
+harness = false
+
+[[bench]]
+name = "find_all_crossover"
+harness = false
+
+[[bench]]
+name = "count_byte_crossover"
+harness = false
+
+[[bench]]
+name = "count_byte_device"
+harness = false
+required-features = ["gpu"]
+
+[[bench]]
+name = "anchor_scaling"
+harness = false
+
+[[bench]]
+name = "field_anchor_scaling"
+harness = false
+
+[[bench]]
+name = "key_index_bench"
+harness = false
+
+[[bench]]
+name = "key_collision_check"
+harness = false
+
+[[bench]]
+name = "sched_probe"
+harness = false
+
+[[bench]]
+name = "axis_grain"
+harness = false
+
+[[bench]]
+name = "seam_cost"
+harness = false
+
+[[bench]]
+name = "attempt_cost"
+harness = false
+
+[[bench]]
+name = "vs_regex"
+harness = false
+
+[[bench]]
+name = "vs_regex_full"
+harness = false
+
+[[bench]]
+name = "lex_scaling"
+harness = false
+
+[[bench]]
+name = "lex_index"
+harness = false
+
+[[bench]]
+name = "index_pruning"
+harness = false
+
+[[bench]]
+name = "entropy_pass"
+harness = false
+
+[[bench]]
+name = "lex_phase_scaling"
+harness = false
+
+[[bench]]
+name = "profile_target"
+harness = false
+
+[[bench]]
+name = "simd_search"
+harness = false
+
+[[bench]]
+name = "context_window"
+harness = false
+
+[[bench]]
+name = "pattern_set_union"
+harness = false
+
+# The tandem probe needs the device + scheduler, built only with the
+# `tandem` feature.
+[[bench]]
+name = "tandem_batch"
+harness = false
+required-features = ["tandem"]
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = "warn"
+
+[profile.release]
+# Panics unwind: gpu.rs catches the panic cudarc's loader raises on a host without the CUDA library
+# and runs on the CPU, and PyO3 raises a panic in the Python extension as a Python PanicException.
+# Under panic = "abort" either one ends the process.
+lto = "off"
+codegen-units = 1
+
+# The test suites' profile: the release build in 256 codegen units, which compile in parallel, and
+# without LTO whatever the release profile sets. Its binary is inlined differently from the
+# shipped one.
+[profile.release-test]
+inherits = "release"
+lto = "off"
+codegen-units = 256
