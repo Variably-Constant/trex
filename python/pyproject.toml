@@ -1,0 +1,30 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "trex-re"
+description = "TREX (Token Regular EXpression) is a regex-shaped pattern language over typed tokens. The lexer reads the input once into typed tokens and a pattern matches over them: a whole number, word, quoted string, IP address, URL, email address, timestamp, version and 18 more kinds are one atom each, and the whitespace between tokens is never written. A capture binds a named register that a later token must equal, a balanced bracket group matches whole, and matching does not backtrack."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Mark Newton" }]
+keywords = ["regex", "tokens", "pattern-matching", "text-search", "log-parsing"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Operating System :: OS Independent",
+]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/Variably-Constant/trex"
+Documentation = "https://variably-constant.github.io/trex/docs/reference/python/"
+
+[tool.maturin]
+# The extension is `trex.trex` inside the `trex` package in python/trex/,
+# which re-exports it beside its type stubs.
+module-name = "trex.trex"
+# Bytecode a local import leaves in the package is not part of it.
+exclude = ["**/__pycache__/**"]

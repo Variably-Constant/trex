@@ -1,0 +1,45 @@
+/target
+
+# Local tooling and trackers - never published. Enumerated rather than
+# `.*/`, since gitignore cannot re-include a child of an excluded directory.
+/.beads/
+/.claude/
+/.dolt/
+/.local/
+/.cargo/
+*.db
+.beads-credential-key
+
+# Per-user agent instructions.
+/CLAUDE.md
+/AGENTS.md
+
+# Session scratch: underscore-prefixed logs, dumps and staged artifacts at
+# the root. `_corpus` is scratch too, except the baked compression prior and
+# the English sample the device coder reads, which the `compress` feature
+# compiles into the binary and so must be tracked, and the parallel corpus
+# the measurement examples read; the directory is re-included so its
+# children can be.
+/_*
+!/_corpus/
+/_corpus/*
+!/_corpus/baked_model.br
+!/_corpus/prior_en.txt
+!/_corpus/parallel/
+
+# Nested standalone stub crate build artifacts
+trex-binary/packstub-nsb/target/
+
+# Bytecode the comparison's Python tooling in benches/ leaves behind when run
+__pycache__/
+
+# The extension module `maturin develop` copies into the Python package,
+# with its debug symbols on Windows
+/python/trex/*.pyd
+/python/trex/*.pdb
+/python/trex/*.so
+
+# Internal tracker / handoff docs - kept locally, not shipped with the crate
+docs/HANDOFF.md
+docs/OPTIMIZATIONS.md
+docs/OPTIMIZATION_TRACKER.md
